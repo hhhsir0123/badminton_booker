@@ -1,0 +1,36 @@
+# 用户配置
+user:
+  username: ""
+  password: ""
+  email: ""  # 接收通知的邮箱
+
+# 登录配置
+login:
+  url: "https://ggtypt.cumtb.edu.cn/venue/login"
+  max_retry: 3  # 验证码识别失败最大重试次数
+  auto_captcha: true  # 是否自动识别验证码
+  headless: false  # 是否无头模式
+
+# 预订配置
+booking:
+  venue_type: "羽毛球"  # 场地类型
+  preferred_courts: [1, 2, 3]  # 优先场地编号
+  preferred_time_slots:
+    - "18:00-19:00"
+    - "19:00-20:00"
+  booking_days_ahead: 3  # 提前几天预订
+  retry_interval: 60  # 查询间隔（秒）
+
+# 邮件通知配置
+email:
+  smtp_server: "smtp.qq.com"
+  smtp_port: 465
+  sender_email: ""
+  sender_password: ""  # 邮箱授权码
+  use_ssl: true
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  file: "logs/badminton_booker.log"

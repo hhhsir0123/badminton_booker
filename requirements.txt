@@ -1,0 +1,6 @@
+# requirements.txt 更新版本
+selenium>=4.15.0
+Pillow>=10.0.0
+PyYAML>=6.0.1
+opencv-python>=4.8.0
+easyocr>=1.7.0
