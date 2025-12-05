@@ -4,7 +4,8 @@
 import sys
 import os
 import time
-
+from datetime import datetime, timedelta
+from datetime import time as dttime
 # 添加项目根目录到Python路径
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -124,22 +125,34 @@ def test_mode():
         logger.info("成功进入场馆页面，浏览器将保持打开...")
         time.sleep(10)
         logger.info("正在查询可用场地...")
-        available_courts = query_manager.query_available_courts('2025-12-06')
+
+        booking_manager.click_partner("王葭泐")
+        cnt = 0
+        # 获取明天的日期
+        tomorrow = datetime.now() + timedelta(days=1)
+
+        # 创建明天早上6点59分的时间对象
+        six_fifty_nine_am_tomorrow = datetime.combine(tomorrow, dttime(6, 59, 58))
+        while True:
+            if datetime.now() < six_fifty_nine_am_tomorrow:
+                time.sleep(1)
+                cnt += 1
+                if cnt % 600 == 0:
+                    print(f'10分钟过去了，cur: {datetime.now().strftime("%H:%M:%S")}')
+                    available_courts = query_manager.query_available_courts('2025-12-07')
+                    cnt = 0
+                continue
+            else:
+                available_courts = query_manager.query_available_courts('2025-12-07')
+                # 输出查询结果
+                print("\n" + "="*60)
+                print("可用场地查询结果:")
+                print("="*60)
+                for court_name, time_slots in available_courts.items():
+                    if '10:00-11:00' in time_slots and '11:00-12:00' in time_slots:
+                        res = booking_manager.book_court(court_name, time_slots, ["王葭泐"])  # 尝试预订第一个可用时
         
-        # 输出查询结果
-        print("\n" + "="*60)
-        print("可用场地查询结果:")
-        print("="*60)
-        for court_name, time_slots in available_courts.items():
-            if time_slots:
-                res = booking_manager.book_court(court_name, time_slots, ["王葭泐"])  # 尝试预订第一个可用时
-                print(f"预订结果: {'成功' if res else '失败'}")
-                print(f"\n{court_name}:")
-                for slot in time_slots:
-                    print(f"  - {slot}")
-        print("="*60 + "\n")
-        
-        input("按回车键关闭浏览器...")
+        # input("按回车键关闭浏览器...")
     except Exception as e:
         logger.error(f"测试失败: {e}", exc_info=True)
     finally:

@@ -128,7 +128,7 @@ class QueryManager:
                 logger.warning(f"点击场馆失败: {e}")
             
             # 等待页面跳转
-            time.sleep(3)
+            time.sleep(1)
             
             # 检查是否成功进入场馆页面
             current_url = self.browser.driver.current_url
@@ -165,10 +165,6 @@ class QueryManager:
         """
         try:
             logger.info("开始解析场地可用性...")
-            
-            # 等待表格加载
-            time.sleep(2)
-            
             # 查找表格
             table = self.browser.driver.find_element(
                 By.CSS_SELECTOR, 
@@ -282,13 +278,14 @@ class QueryManager:
         logger.info(f"查询可用场地: 日期={date if date else '当前页面'}")
         
         try:
-            # TODO: 如果指定了日期，需要先选择日期
+            tag = False
             if date:
-                self.select_date(date)
-            
-            # 解析当前页面的场地可用性
-            return self.parse_court_availability()
-            
+                tag = self.select_date(date)
+            if tag:
+                # 解析当前页面的场地可用性
+                return self.parse_court_availability()
+            logger.error(f"查询结果为空", exc_info=True)
+            return {}
         except Exception as e:
             logger.error(f"查询失败: {e}", exc_info=True)
             return {}
@@ -319,10 +316,6 @@ class QueryManager:
             except ValueError as e:
                 logger.error(f"日期格式错误，应为YYYY-MM-DD: {e}")
                 return False
-            
-            # 等待日期选择框加载
-            time.sleep(1)
-            
             # 查找所有日期选择框中的日期元素
             try:
                 date_elements = self.browser.driver.find_elements(
@@ -364,7 +357,7 @@ class QueryManager:
                     logger.warning(f"选择日期失败: {e}")
                 
                 # 等待页面刷新
-                time.sleep(2)
+                time.sleep(0.5)
                 logger.info("日期选择完成，页面已刷新")
                 
             except NoSuchElementException:

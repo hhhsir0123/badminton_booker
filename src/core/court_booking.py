@@ -38,7 +38,7 @@ class BookingManager:
             else:
                 logger.warning(f"预订 {court_name} 的 {time_slot} 时间段失败，尝试下一个时间段")
         # step2: 选择同伴
-        self.__click_partner(partner_names[0])  # 仅选择第一个同伴作为示例
+        # self.click_partner(partner_names[0])  # 仅选择第一个同伴作为示例
         # Step3：点击提交
         self.__click_submit()
         # step4: 处理点击类的验证码
@@ -59,8 +59,8 @@ class BookingManager:
         logger.info("尝试点击提交按钮")
 
         try:
-            # 等待提交按钮加载
-            time.sleep(1)
+            # # 等待提交按钮加载
+            # time.sleep(1)
             
             # 查找submit_order_box容器
             submit_box = self.browser.driver.find_element(
@@ -110,7 +110,7 @@ class BookingManager:
                 return False
             
             # 等待提交响应
-            time.sleep(2)
+            time.sleep(0.5)
             
             # 检查提交结果（可以根据页面跳转、成功提示等判断）
             try:
@@ -141,7 +141,7 @@ class BookingManager:
             self.browser.driver.save_screenshot("submit_error.png")
             return False
                             
-    def __click_partner(self, partner_name: str) -> bool:
+    def click_partner(self, partner_name: str) -> bool:
         """
         点击同伴按钮
                 
