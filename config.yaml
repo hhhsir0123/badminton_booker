@@ -2,7 +2,7 @@
 user:
   username: ""
   password: ""
-  email: ""  # 接收通知的邮箱
+  email: "hhhsir0123@gmail.com"  # 接收通知的邮箱
 
 # 登录配置
 login:
@@ -23,11 +23,11 @@ booking:
 
 # 邮件通知配置
 email:
-  smtp_server: "smtp.qq.com"
-  smtp_port: 465
-  sender_email: ""
-  sender_password: ""  # 邮箱授权码
-  use_ssl: true
+  smtp_server: "smtp.qq.com"  # SMTP服务器地址
+  smtp_port: 465  # SMTP端口
+  sender_email: "1647805407@qq.com"  # 发件人邮箱（与user.email可以相同）
+  sender_password: "lzflwseyzqmfcjbb"  # 邮箱授权码（不是登录密码！）
+  use_ssl: true  # 是否使用SSL（端口465用true，587用false但会自动TLS）
 
 # 日志配置
 logging:
