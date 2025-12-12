@@ -266,3 +266,4 @@ class BasePipeline(ABC):
                 self.logger.error(f"  ❌ 预订出错: {court_name} - {e} {traceback.format_exc()}")
         
         return booked_courts
+    
