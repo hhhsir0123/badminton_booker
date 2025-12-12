@@ -9,6 +9,9 @@ from typing import List, Dict, Optional
 from .browser import BrowserManager
 from ..utils.logger import setup_logger
 from datetime import datetime
+from selenium.webdriver.support.ui import WebDriverWait as _WebDriverWait
+from selenium.webdriver.support import expected_conditions as _EC
+from selenium.webdriver.common.by import By as _By
 
 logger = setup_logger(__name__)
 
@@ -101,8 +104,6 @@ class QueryManager:
             
             if not venue_element:
                 logger.error(f"未找到场馆: {venue_name}")
-                self.browser.driver.save_screenshot("venue_not_found.png")
-                logger.info("已保存截图到 venue_not_found.png")
                 return False
             
             # 获取元素信息用于调试
@@ -147,12 +148,9 @@ class QueryManager:
                 return True
             else:
                 logger.warning(f"可能未成功进入场馆页面，当前标题: {page_title}")
-                self.browser.driver.save_screenshot("venue_page_check.png")
-                # 即使不确定，也返回True继续执行
                 return True
         except Exception as e:
             logger.error(f"导航到场馆失败: {e}", exc_info=True)
-            self.browser.driver.save_screenshot("navigate_venue_error.png")
             return False
     
     def parse_court_availability(self) -> Dict[str, List[str]]:
@@ -165,9 +163,6 @@ class QueryManager:
         """
         try:
             logger.info("开始解析场地可用性...")
-            
-            # 等待表格加载
-            time.sleep(2)
             
             # 查找表格
             table = self.browser.driver.find_element(
@@ -262,11 +257,9 @@ class QueryManager:
             
         except NoSuchElementException as e:
             logger.error(f"未找到表格元素: {e}")
-            self.browser.driver.save_screenshot("parse_table_error.png")
             return {}
         except Exception as e:
             logger.error(f"解析场地可用性失败: {e}", exc_info=True)
-            self.browser.driver.save_screenshot("parse_availability_error.png")
             return {}
     
     def query_available_courts(self, date: str = None) -> Dict[str, List[str]]:
@@ -292,7 +285,52 @@ class QueryManager:
         except Exception as e:
             logger.error(f"查询失败: {e}", exc_info=True)
             return {}
-    
+
+    def is_date_exist(self, date: str) -> bool:
+        try:
+            logger.info(f"选择日期: {date}")
+            # 实现日期选择逻辑
+            if not date:
+                logger.warning("日期参数为空，跳过日期选择")
+                return False
+            
+            # 解析日期格式 YYYY-MM-DD
+            try:
+                date_obj = datetime.strptime(date, "%Y-%m-%d")
+                # 格式化为 "12月06日" 格式
+                target_date_text = f"{date_obj.month}月{date_obj.day:02d}日"
+                logger.info(f"目标日期文本: {target_date_text}")
+            except ValueError as e:
+                logger.error(f"日期格式错误，应为YYYY-MM-DD: {e}")
+                return False
+            
+            # 查找所有日期选择框中的日期元素
+            try:
+                date_elements = self.browser.driver.find_elements(
+                    By.CSS_SELECTOR,
+                    "div.date_box span[data-v-6fb750cc]"
+                )
+                
+                logger.info(f"找到 {len(date_elements)} 个日期元素: {[elem.text for elem in date_elements]}")
+                
+                # 遍历查找匹配的日期
+                for elem in date_elements:
+                    try:
+                        elem_text = elem.text.strip()
+                        logger.debug(f"检查日期元素: {elem_text}")
+                        
+                        if target_date_text in elem_text:
+                            return True
+                    except Exception as e:
+                        logger.debug(f"读取日期元素失败: {e}")
+                        continue
+            except NoSuchElementException:
+                logger.error("[is_date_exist] 未找到日期选择框")
+                return False
+        except Exception as e:
+            logger.error(f"日期不存在: {e}", exc_info=True)
+            return False
+
     def select_date(self, date: str) -> bool:
         """
         选择日期
@@ -320,9 +358,6 @@ class QueryManager:
                 logger.error(f"日期格式错误，应为YYYY-MM-DD: {e}")
                 return False
             
-            # 等待日期选择框加载
-            time.sleep(1)
-            
             # 查找所有日期选择框中的日期元素
             try:
                 date_elements = self.browser.driver.find_elements(
@@ -349,7 +384,6 @@ class QueryManager:
                 
                 if not target_element:
                     logger.error(f"未找到日期 {target_date_text}")
-                    self.browser.driver.save_screenshot("date_not_found.png")
                     return False
                 
                 # 滚动到元素位置
@@ -364,14 +398,67 @@ class QueryManager:
                     logger.warning(f"选择日期失败: {e}")
                 
                 # 等待页面刷新
-                time.sleep(2)
+                time.sleep(0.5)
                 logger.info("日期选择完成，页面已刷新")
                 
             except NoSuchElementException:
                 logger.error("未找到日期选择框")
-                self.browser.driver.save_screenshot("date_box_not_found.png")
                 return False
             return True
         except Exception as e:
             logger.error(f"选择日期失败: {e}", exc_info=True)
+            return False
+        
+    def click_close_button(self) -> bool:
+        """找到页面中的关闭按钮并点击它"""
+        try:
+            close_btn = None
+            xpath_selector = "//button[.//span[normalize-space(text())='关闭']]"
+            css_selector = "button.ivu-btn.ivu-btn-primary"
+            if not close_btn:
+                try:
+                    elems = self.browser.driver.find_elements(By.XPATH, xpath_selector)
+                    for e in elems:
+                        if e.is_displayed():
+                            close_btn = e
+                            break
+                except Exception:
+                    close_btn = None
+
+            if not close_btn:
+                try:
+                    elems = self.browser.driver.find_elements(By.CSS_SELECTOR, css_selector)
+                    for e in elems:
+                        # 进一步确认内部有文字"关闭"
+                        try:
+                            span = e.find_element(By.XPATH, ".//span")
+                            if "关闭" in (span.text or "") and e.is_displayed():
+                                close_btn = e
+                                break
+                        except Exception:
+                            continue
+                except Exception:
+                    close_btn = None
+
+            if not close_btn:
+                logger.warning("未找到关闭按钮")
+                return False
+
+            # 滚动到按钮并点击
+            try:
+                self.browser.driver.execute_script("arguments[0].scrollIntoView(true);", close_btn)
+            except Exception:
+                pass
+            try:
+                close_btn.click()
+            except Exception:
+                try:
+                    self.browser.driver.execute_script("arguments[0].click();", close_btn)
+                except Exception as e:
+                    logger.error(f"点击关闭按钮失败: {e}", exc_info=True)
+                    return False
+            logger.info("已点击关闭按钮")
+            return True
+        except Exception as e:
+            logger.error(f"click_close_button 执行失败: {e}", exc_info=True)
             return False

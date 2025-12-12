@@ -29,7 +29,7 @@ class BookingManager:
         self.query = query
         self.captcha_handler = ClickCaptchaHandler(browser)
     
-    def book_court(self, court_name: str, time_slots: list, partner_names: list) -> bool:
+    def book_court(self, court_name: str, time_slots: list, partner_names: list, is_click_parter: bool=False) -> bool:
         # step1：点击可用的court
         for time_slot in time_slots:
             success = self.__click_court(court_name, time_slot)
@@ -38,7 +38,8 @@ class BookingManager:
             else:
                 logger.warning(f"预订 {court_name} 的 {time_slot} 时间段失败，尝试下一个时间段")
         # step2: 选择同伴
-        self.__click_partner(partner_names[0])  # 仅选择第一个同伴作为示例
+        if is_click_parter:
+            self.click_partner(partner_names[0])  # 仅选择第一个同伴作为示例
         # Step3：点击提交
         self.__click_submit()
         # step4: 处理点击类的验证码
@@ -141,7 +142,7 @@ class BookingManager:
             self.browser.driver.save_screenshot("submit_error.png")
             return False
                             
-    def __click_partner(self, partner_name: str) -> bool:
+    def click_partner(self, partner_name: str) -> bool:
         """
         点击同伴按钮
                 

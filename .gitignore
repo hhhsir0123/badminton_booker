@@ -1,0 +1,4 @@
+__pycache__/
+captcha_images/
+logs/
+config.yaml
