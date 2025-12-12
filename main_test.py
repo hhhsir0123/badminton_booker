@@ -10,13 +10,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
 from src.pipeline.periodic_scanning_pipeline import PeriodicScanningPipeline
+from src.pipeline.ticket_grabbing_pipeline import TicketGrabbingPipeline
 
+def test_periodic_scanning_pipeline():
+    """测试定时轮询抢票流程"""
+    pipeline = PeriodicScanningPipeline()
+    pipeline.run()
+
+def test_ticket_grabbing_pipeline():
+    """测试定时抢票流程"""
+    pipeline = TicketGrabbingPipeline()
+    pipeline.run()
 
 if __name__ == "__main__":
     """主函数入口"""
-    # 选择运行的流程
-    # 这里以定时轮询流程为例，实际使用中可以根据需要选择不同的流程
-    pipeline = PeriodicScanningPipeline()
-    pipeline.run()
+    test_ticket_grabbing_pipeline()
 
 

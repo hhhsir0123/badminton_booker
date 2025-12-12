@@ -4,8 +4,9 @@
 """
 import os
 import time
+import traceback
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, List, Tuple, Dict
 
 from ..config import Config
 from ..core.browser import BrowserManager
@@ -173,3 +174,95 @@ class BasePipeline(ABC):
     def __exit__(self, exc_type, exc_val, exc_tb):
         """上下文管理器退出，自动清理资源"""
         self.cleanup()
+
+    def _filter_valid_courts(self, 
+                            available_courts: Dict[str, List[str]],
+                            aim_time_slots: List[str] = []
+                            ) -> List[Tuple[str, List[str]]]:
+        """
+        筛选符合条件的场地
+        
+        Args:
+            available_courts: 所有可用场地
+            
+        Returns:
+            符合条件的场地列表 [(场地名, 时间段列表)]
+        """
+        valid_courts = []
+        
+        self.logger.info(f"🎯 筛选符合条件的场地（需包含时间段: {aim_time_slots}）")
+        
+        for court_name, available_times in available_courts.items():
+            # 检查是否所有目标时间段都可用
+            if self._check_time_slots_available(available_times, aim_time_slots):
+                valid_courts.append((court_name, available_times))
+                self.logger.info(f"  ✓ {court_name} 符合条件")
+        
+        if valid_courts:
+            self.logger.info(f"共找到 {len(valid_courts)} 个符合条件的场地")
+        
+        return valid_courts
+    
+    def _check_time_slots_available(self, available_times: List[str], aim_time_slots: List[str]= []) -> bool:
+        """
+        检查所有目标时间段是否都可用
+        
+        Args:
+            available_times: 可用时间段列表
+            
+        Returns:
+            是否所有目标时间段都可用
+        """
+        for target_slot in aim_time_slots:
+            if target_slot not in available_times:
+                return False
+        return True
+
+    def _process_bookings(self, 
+                         valid_courts: List[Tuple[str, List[str]]],
+                         aim_time_slots: List[str] = [],
+                         is_click_parter: bool = False,
+                         partner_name: str = ""
+                         ) -> List[Tuple[str, List[str]]]:
+        """
+        处理预订（如果启用自动预订）
+        
+        Args:
+            valid_courts: 符合条件的场地列表
+            
+        Returns:
+            成功预订的场地列表
+        """
+        booked_courts = []
+        
+        self.logger.info("🎫 开始预订...")
+        
+        for court_name, time_slots in valid_courts:
+            self.logger.info(f"尝试预订: {court_name} - {aim_time_slots}")
+            
+            try:
+                booking_result = False
+                if is_click_parter:
+                    booking_result = self.booking_manager.book_court(
+                        court_name=court_name,
+                        time_slots=aim_time_slots,
+                        partner_names=[partner_name] if partner_name else [],
+                        is_click_parter=True
+                    )
+                else:
+                    booking_result = self.booking_manager.book_court(
+                        court_name=court_name,
+                        time_slots=aim_time_slots,
+                        partner_names=[]
+                    )
+                if booking_result:
+                    self.logger.info(f"  ✓ 预订成功: {court_name}")
+                    booked_courts.append((court_name, aim_time_slots))
+                    break  # 预订成功后停止
+                else:
+                    self.logger.warning(f"  ✗ 预订失败: {court_name}")
+                    
+            except Exception as e:
+                self.logger.error(f"  ❌ 预订出错: {court_name} - {e} {traceback.format_exc()}")
+        
+        return booked_courts

@@ -200,14 +200,14 @@ polling:
                 self.logger.info(f"  • {court_name}: {time_slots}")
             
         # 2. 筛选符合条件的场地
-        valid_courts = self._filter_valid_courts(available_courts)
+        valid_courts = self._filter_valid_courts(available_courts, self.polling_time_slots)
         
         if not valid_courts:
             self.logger.info("未找到符合条件的场地")
             return
         
         # 3. 处理预订
-        booked_courts = self._process_bookings(valid_courts)
+        booked_courts = self._process_bookings(valid_courts, self.polling_time_slots, True, self.partner_name)
         
         # 4. 发送通知
         self._send_notifications(booked_courts, valid_courts)
@@ -238,90 +238,7 @@ polling:
         except Exception as e:
             self.logger.error(f"查询失败: {e}", exc_info=True)
             return {}
-    
-    def _filter_valid_courts(self, 
-                            available_courts: Dict[str, List[str]]
-                            ) -> List[Tuple[str, List[str]]]:
-        """
-        筛选符合条件的场地
-        
-        Args:
-            available_courts: 所有可用场地
-            
-        Returns:
-            符合条件的场地列表 [(场地名, 时间段列表)]
-        """
-        valid_courts = []
-        
-        self.logger.info(f"🎯 筛选符合条件的场地（需包含时间段: {self.polling_time_slots}）")
-        
-        for court_name, available_times in available_courts.items():
-            # 检查是否所有目标时间段都可用
-            if self._check_time_slots_available(available_times):
-                valid_courts.append((court_name, available_times))
-                self.logger.info(f"  ✓ {court_name} 符合条件")
-        
-        if valid_courts:
-            self.logger.info(f"共找到 {len(valid_courts)} 个符合条件的场地")
-        
-        return valid_courts
-    
-    def _check_time_slots_available(self, available_times: List[str]) -> bool:
-        """
-        检查所有目标时间段是否都可用
-        
-        Args:
-            available_times: 可用时间段列表
-            
-        Returns:
-            是否所有目标时间段都可用
-        """
-        for target_slot in self.polling_time_slots:
-            if target_slot not in available_times:
-                return False
-        return True
-    
-    def _process_bookings(self, 
-                         valid_courts: List[Tuple[str, List[str]]]
-                         ) -> List[Tuple[str, List[str]]]:
-        """
-        处理预订（如果启用自动预订）
-        
-        Args:
-            valid_courts: 符合条件的场地列表
-            
-        Returns:
-            成功预订的场地列表
-        """
-        booked_courts = []
-        
-        if not self.is_auto_booking:
-            self.logger.info("⚠️  自动预订未启用，跳过预订")
-            return booked_courts
-        
-        self.logger.info("🎫 自动预订已启用，开始预订...")
-        
-        for court_name, time_slots in valid_courts:
-            self.logger.info(f"尝试预订: {court_name} - {self.polling_time_slots}")
-            
-            try:
-                booking_result = self.booking_manager.book_court(
-                    court_name=court_name,
-                    time_slots=self.polling_time_slots,
-                    partner_names=[self.partner_name] if self.partner_name else []
-                )
-                
-                if booking_result:
-                    self.logger.info(f"  ✓ 预订成功: {court_name}")
-                    booked_courts.append((court_name, self.polling_time_slots))
-                    break  # 预订成功后停止
-                else:
-                    self.logger.warning(f"  ✗ 预订失败: {court_name}")
-                    
-            except Exception as e:
-                self.logger.error(f"  ❌ 预订出错: {court_name} - {e} {traceback.format_exc()}")
-        
-        return booked_courts
+
     
     def _send_notifications(self, 
                            booked_courts: List[Tuple[str, List[str]]],
