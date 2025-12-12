@@ -139,19 +139,26 @@ def test_mode():
                 cnt += 1
                 if cnt % 600 == 0:
                     print(f'10分钟过去了，cur: {datetime.now().strftime("%H:%M:%S")}')
-                    available_courts = query_manager.query_available_courts('2025-12-07')
+                    available_courts = query_manager.query_available_courts('2025-12-12')
                     cnt = 0
                 continue
             else:
-                available_courts = query_manager.query_available_courts('2025-12-07')
+                _ = query_manager.query_available_courts('2025-12-11')
+
+                available_courts = query_manager.query_available_courts('2025-12-13')
+                while not available_courts:
+                    print('未找到球场！')
+                    _ = query_manager.query_available_courts('2025-12-11')
+                    available_courts = query_manager.query_available_courts('2025-12-13')
                 # 输出查询结果
                 print("\n" + "="*60)
                 print("可用场地查询结果:")
                 print("="*60)
                 for court_name, time_slots in available_courts.items():
-                    if '10:00-11:00' in time_slots and '11:00-12:00' in time_slots:
-                        res = booking_manager.book_court(court_name, time_slots, ["王葭泐"])  # 尝试预订第一个可用时
-        
+                    if '20:00-21:00' in time_slots and '21:00-22:00' in time_slots:
+                        _time_slots = ['20:00-21:00', '21:00-22:00']
+                        res = booking_manager.book_court(court_name, _time_slots, ["王葭泐"])  # 尝试预订第一个可用时
+
         # input("按回车键关闭浏览器...")
     except Exception as e:
         logger.error(f"测试失败: {e}", exc_info=True)

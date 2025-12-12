@@ -347,7 +347,7 @@ class QueryManager:
                 
                 # 滚动到元素位置
                 self.browser.driver.execute_script("arguments[0].scrollIntoView(true);", target_element)
-                time.sleep(0.5)
+                # time.sleep(0.5)
                 
                 # 点击日期元素
                 logger.info(f"点击日期: {target_date_text}")
@@ -357,7 +357,7 @@ class QueryManager:
                     logger.warning(f"选择日期失败: {e}")
                 
                 # 等待页面刷新
-                time.sleep(0.5)
+                time.sleep(0.3)
                 logger.info("日期选择完成，页面已刷新")
                 
             except NoSuchElementException:

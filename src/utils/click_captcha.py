@@ -49,7 +49,7 @@ class ClickCaptchaHandler:
                 if not hint_text:
                     logger.warning("无法获取提示文字")
                     self._refresh_captcha()
-                    time.sleep(1)
+                    time.sleep(0.3)
                     continue
                 
                 logger.info(f"验证码提示: {hint_text}")
@@ -58,7 +58,7 @@ class ClickCaptchaHandler:
                 if not target_chars:
                     logger.warning("无法提取目标文字")
                     self._refresh_captcha()
-                    time.sleep(1)
+                    time.sleep(0.3)
                     continue
                 
                 logger.info(f"目标文字: {target_chars}")
@@ -67,7 +67,7 @@ class ClickCaptchaHandler:
                 if not captcha_image or not captcha_element:
                     logger.warning("无法获取验证码图片")
                     self._refresh_captcha()
-                    time.sleep(1)
+                    time.sleep(0.3)
                     continue
                 
                 # 使用ddddocr检测+识别
@@ -76,11 +76,11 @@ class ClickCaptchaHandler:
                 if not positions or len(positions) != len(target_chars):
                     logger.warning(f"识别失败: 需要{len(target_chars)}个，识别到{len(positions)}个")
                     self._refresh_captcha()
-                    time.sleep(1)
+                    time.sleep(0.3)
                     continue
                 
                 if self._click_positions(captcha_element, positions):
-                    time.sleep(2)
+                    time.sleep(0.3)
                     
                     if not self._check_click_captcha_exists():
                         logger.info("✓ 验证码处理成功！")
@@ -88,15 +88,15 @@ class ClickCaptchaHandler:
                     else:
                         logger.warning("验证码仍存在，继续重试")
                         self._refresh_captcha()
-                        time.sleep(1)
+                        time.sleep(0.3)
                 else:
                     self._refresh_captcha()
-                    time.sleep(1)
+                    time.sleep(0.3)
                 
             except Exception as e:
                 logger.error(f"处理验证码出错: {e}", exc_info=True)
                 self._refresh_captcha()
-                time.sleep(1)
+                time.sleep(0.3)
         
         logger.error(f"达到最大重试次数 ({max_retry})")
         return False

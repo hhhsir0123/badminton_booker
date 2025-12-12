@@ -237,7 +237,7 @@ class BookingManager:
         
         try:
             # 等待表格加载
-            time.sleep(1)
+            # time.sleep(0.5)
             
             # 查找表格
             table = self.browser.driver.find_element(
@@ -291,7 +291,7 @@ class BookingManager:
                 # 方式1: 点击整个div
                 try:
                     self.browser.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", status_div)
-                    time.sleep(0.3)
+                    # time.sleep(0.3)
                     status_div.click()
                     logger.info("成功点击预订按钮（方式1：点击div）")
                     click_success = True
@@ -311,7 +311,7 @@ class BookingManager:
                 if not click_success:
                     try:
                         self.browser.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", target_cell)
-                        time.sleep(0.3)
+                        # time.sleep(0.3)
                         target_cell.click()
                         logger.info("成功点击预订按钮（方式3：点击单元格）")
                         click_success = True
@@ -324,7 +324,7 @@ class BookingManager:
                     return False
                 
                 # 6. 等待页面响应
-                time.sleep(2)
+                # time.sleep(0.3)
                 
                 # 7. 检查是否弹出预订确认框或跳转到预订页面
                 # TODO: 根据实际页面行为，可能需要处理弹窗、确认等
