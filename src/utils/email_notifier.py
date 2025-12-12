@@ -106,7 +106,7 @@ class EmailNotifier:
         Returns:
             是否发送成功
         """
-        subject = "✅ 羽毛球场地预订成功"
+        subject = "✅ 羽毛球场地预订成功，请及时登陆付款"
         
         # 格式化同伴信息
         partners_str = "、".join(booking_info.get('partners', [])) if booking_info.get('partners') else "无"
