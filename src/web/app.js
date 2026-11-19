@@ -426,6 +426,10 @@ function bind() {
   $('#start-poll').addEventListener('click', () => startRun('poll'));
   $('#stop').addEventListener('click', stopRun);
   $('#save').addEventListener('click', saveToProgram);
+  $('#toggle-log').addEventListener('click', () => {
+    const log = $('#run-log');
+    log.hidden = !log.hidden;
+  });
 
   window.addEventListener('beforeunload', (event) => {
     if (!state.dirty) return undefined;

@@ -568,3 +568,40 @@ label.switch small {
 label.wide {
   grid-column: 1 / -1;
 }
+
+/* ------------------------------------------------------------ 全局运行控制条 */
+.control-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  position: sticky;
+  top: 10px;
+  z-index: 10;
+  padding: 14px 18px;
+}
+
+.control-bar .hint {
+  margin: 0;
+  flex: 1 1 220px;
+}
+
+.control-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.control-actions button {
+  padding: 8px 14px;
+}
+
+.control-bar .run-log {
+  flex-basis: 100%;
+  margin: 2px 0 0;
+}
+
+.control-bar .run-log[hidden] {
+  display: none;
+}

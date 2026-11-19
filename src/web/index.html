@@ -19,6 +19,19 @@
 </header>
 
 <main>
+  <section class="panel control-bar">
+    <output id="run-state" class="state">未连接</output>
+    <p id="run-hint" class="hint">直接保存并启停，不用敲命令。</p>
+    <div class="control-actions">
+      <button id="start" class="primary" type="button">开始抢票</button>
+      <button id="start-poll" class="secondary" type="button">开始轮询</button>
+      <button id="stop" class="secondary" type="button">停止</button>
+      <button id="save" class="secondary" type="button">保存配置到程序</button>
+      <button id="toggle-log" class="secondary" type="button">日志</button>
+    </div>
+    <pre id="run-log" class="run-log" tabindex="0" hidden>（暂无日志）</pre>
+  </section>
+
   <form id="config" class="panel config" novalidate>
     <nav class="tabs" role="tablist">
       <button type="button" class="tab active" data-tab="system">1 · 系统设置</button>
@@ -150,18 +163,6 @@
   </form>
 
   <aside>
-    <section class="panel run-panel">
-      <div class="section-head"><h2>运行控制</h2><output id="run-state" class="state">未连接</output></div>
-      <div class="stack-actions">
-        <button id="start" class="primary" type="button">开始抢票</button>
-        <button id="start-poll" class="secondary" type="button">开始轮询</button>
-        <button id="stop" class="secondary" type="button">停止</button>
-        <button id="save" class="secondary" type="button">保存配置到程序</button>
-      </div>
-      <p id="run-hint" class="hint">直接保存并启停，不用敲命令。</p>
-      <pre id="run-log" class="run-log" tabindex="0">（暂无日志）</pre>
-    </section>
-
     <details class="panel preview-panel">
       <summary>预览将写入的内容</summary>
       <pre id="preview" tabindex="0">（还没有内容）</pre>
