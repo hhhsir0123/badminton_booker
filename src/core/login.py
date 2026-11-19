@@ -98,8 +98,11 @@ class LoginManager:
             return False
         if not self._handle_captcha(auto_captcha):
             return False
+        # 有些实现里验证码通过后会自动提交登录，页面已经跳走
+        if self._wait_logged_in(2) or not self._visible(By.CSS_SELECTOR, "input[type='password']"):
+            return True
         if not self._click_login_button():
-            return False
+            return self._wait_logged_in(3)
         return self._wait_logged_in(12)
 
     def _click_external_user(self) -> bool:
