@@ -1,397 +1,311 @@
+"""登录与场馆导航。
+
+关键点：
+- 优先复用持久化 profile 里的登录态：07:00 的脚本不应该在放场前几十秒才登录，
+  更不应该在那一刻识别验证码；
+- 把原来写死的 time.sleep(3/2/5) 换成条件等待，登录耗时从十几秒降到 2~4 秒；
+- 进入场馆页面的判定改成「日期选择条出现」，比原来的 URL/标题猜测可靠。
 """
-登录模块
-"""
+from __future__ import annotations
+
 import time
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
-from selenium.webdriver.common.keys import Keys
 from typing import Optional
-from .browser import BrowserManager
-from ..utils.ocr import CaptchaRecognizer
+
+from selenium.common.exceptions import NoSuchElementException, TimeoutException
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.webdriver.support.ui import WebDriverWait
+
 from ..utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
+CAPTCHA_INPUTS = [
+    "input[placeholder*='验证码']",
+    "input[name*='captcha']",
+    "input[name*='code']",
+    "input[name='verifyCode']",
+]
+
+
 class LoginManager:
     """登录管理器"""
-    
-    def __init__(self, browser: BrowserManager, ocr: CaptchaRecognizer):
-        """
-        初始化登录管理器
-        
-        Args:
-            browser: 浏览器管理器
-            ocr: OCR识别器
-        """
+
+    def __init__(self, browser, ocr, solver=None):
         self.browser = browser
         self.ocr = ocr
-    
-    def login(self, url: str, username: str, password: str, 
-              auto_captcha: bool = True, max_retry: int = 3) -> bool:
-        """
-        执行登录
-        
-        Args:
-            url: 登录页面URL
-            username: 用户名
-            password: 密码
-            auto_captcha: 是否自动识别验证码
-            max_retry: 最大重试次数
-            
-        Returns:
-            是否登录成功
-        """
-        retry_count = 0
-        
-        while retry_count < max_retry:
-            try:
-                # 访问登录页面
-                logger.info(f"正在访问登录页面: {url}")
-                self.browser.driver.get(url)
-                time.sleep(3)
-                
-                logger.info(f"页面标题: {self.browser.driver.title}")
-                
-                # 点击"校外用户"按钮
-                if not self._click_external_user_button():
-                    logger.error("未找到'校外用户'按钮")
-                    retry_count += 1
-                    continue
-                
-                # 输入用户名和密码
-                if not self._input_credentials(username, password):
-                    logger.error("输入用户名或密码失败")
-                    retry_count += 1
-                    continue
-                
-                # 处理验证码
-                if not self._handle_captcha(auto_captcha):
-                    logger.warning("验证码处理失败")
-                    retry_count += 1
-                    continue
-                
-                # 点击登录按钮
-                if not self._click_login_button():
-                    logger.error("点击登录按钮失败")
-                    retry_count += 1
-                    continue
-                
-                # 检查登录结果
-                time.sleep(5)
-                current_url = self.browser.driver.current_url
-                logger.info(f"当前URL: {current_url}")
-                
-                if 'login' not in current_url:
-                    logger.info("登录成功！")
-                    return True
-                else:
-                    error_msg = self._get_error_message()
-                    if error_msg and '验证码' in error_msg:
-                        logger.warning(f"验证码错误，重试 ({retry_count + 1}/{max_retry})")
-                        retry_count += 1
-                        time.sleep(2)
-                        continue
-                    else:
-                        logger.error(f"登录失败: {error_msg}")
-                        self.browser.driver.save_screenshot(f"login_failed_{retry_count}.png")
-                        return False
-                
-            except Exception as e:
-                logger.error(f"登录过程出错: {e}", exc_info=True)
-                self.browser.driver.save_screenshot("login_error.png")
-                retry_count += 1
-        
-        logger.error(f"已达到最大重试次数 ({max_retry})，登录失败")
-        return False
-    
-    def _click_external_user_button(self) -> bool:
-        """点击'校外用户'按钮"""
-        try:
-            logger.info("正在查找'校外用户'按钮...")
-            external_user_btn = self.browser.wait.until(
-                EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), '校外用户')]"))
-            )
-            self.browser.driver.execute_script("arguments[0].click();", external_user_btn)
-            logger.info("已点击'校外用户'按钮")
-            time.sleep(2)
+        self.solver = solver
+
+    @property
+    def driver(self):
+        return self.browser.driver
+
+    # ------------------------------------------------------------------ 入口
+
+    def ensure_logged_in(self, url: str, username: str, password: str,
+                         auto_captcha: bool = True, max_retry: int = 2) -> bool:
+        """打开站点；有会话就直接复用，没有才登录。"""
+        logger.info("打开站点: %s", url)
+        self.driver.get(url)
+
+        form = self._wait_form(10)
+        if form is None:
+            logger.info("没有出现登录表单，复用已有登录态")
             return True
-        except TimeoutException:
-            logger.error("未找到'校外用户'按钮")
+
+        if not username or not password:
+            logger.error("需要登录但配置里没有账号密码")
             return False
-    
-    def _input_credentials(self, username: str, password: str) -> bool:
-        """输入用户名和密码"""
-        try:
-            # 输入用户名
-            logger.info("正在输入用户名...")
-            username_input = self.browser.wait.until(
-                EC.presence_of_element_located((By.CSS_SELECTOR, "input[type='text'], input[name='username']"))
-            )
-            username_input.clear()
-            username_input.send_keys(username)
-            logger.info(f"用户名已输入: {username}")
-            
-            # 输入密码
-            logger.info("正在输入密码...")
-            password_input = self.browser.driver.find_element(By.CSS_SELECTOR, "input[type='password']")
-            password_input.clear()
-            password_input.send_keys(password)
-            logger.info("密码已输入")
-            
-            return True
-        except Exception as e:
-            logger.error(f"输入凭据失败: {e}", exc_info=True)
-            return False
-    
-    def _handle_captcha(self, auto_captcha: bool) -> bool:
-        """处理验证码"""
-        try:
-            # 查找验证码输入框
-            captcha_input = self._find_captcha_input()
-            if not captcha_input:
-                logger.info("未检测到验证码")
+
+        for attempt in range(max_retry):
+            if self._login_once(username, password, auto_captcha, form):
+                logger.info("登录成功")
                 return True
-            
-            logger.info("检测到验证码！")
-            
-            if auto_captcha:
-                # 查找验证码图片
-                captcha_img = self._find_captcha_image()
-                if not captcha_img:
-                    logger.warning("未找到验证码图片")
-                    return False
-                
-                # OCR识别
-                logger.info("正在使用OCR识别验证码...")
-                time.sleep(0.5)
-                captcha_screenshot = captcha_img.screenshot_as_png
-                captcha_code = self.ocr.recognize(captcha_screenshot)
-                
-                if captcha_code and len(captcha_code) >= 4:
-                    captcha_input.clear()
-                    captcha_input.send_keys(captcha_code)
-                    logger.info(f"验证码已自动填入: {captcha_code}")
-                    return True
-                else:
-                    logger.warning("OCR识别失败或验证码长度不足")
-                    return False
-            else:
-                # 手动输入
-                captcha_code = input("请输入验证码: ")
-                captcha_input.clear()
-                captcha_input.send_keys(captcha_code)
-                logger.info("验证码已手动输入")
-                return True
-                
-        except Exception as e:
-            logger.error(f"验证码处理失败: {e}", exc_info=True)
-            return False
-    
-    def _find_captcha_input(self) -> Optional:
-        """查找验证码输入框"""
-        selectors = [
-            "input[placeholder*='验证码']",
-            "input[name*='captcha']",
-            "input[name*='code']",
-            "input[name='verifyCode']"
-        ]
-        
-        for selector in selectors:
-            try:
-                elem = self.browser.driver.find_element(By.CSS_SELECTOR, selector)
-                logger.debug(f"找到验证码输入框: {selector}")
-                return elem
-            except NoSuchElementException:
-                continue
-        
-        return None
-    
-    def _find_captcha_image(self) -> Optional:
-        """查找验证码图片"""
-        selectors = [
-            "div.ivu-form-item-content span[data-v-57a28888] img[data-v-57a28888]",
-            "span[data-v-57a28888] > img[data-v-57a28888]",
-            "//span[@data-v-57a28888]/img[@data-v-57a28888]",
-            "//img[contains(@src, 'blob')]"
-        ]
-        
-        for selector in selectors:
-            try:
-                if selector.startswith("//"):
-                    imgs = self.browser.driver.find_elements(By.XPATH, selector)
-                else:
-                    imgs = self.browser.driver.find_elements(By.CSS_SELECTOR, selector)
-                
-                for img in imgs:
-                    if img.is_displayed():
-                        logger.debug(f"找到验证码图片: {selector}")
-                        return img
-            except:
-                continue
-        
-        return None
-    
-    def _click_login_button(self) -> bool:
-        """点击登录按钮"""
-        try:
-            logger.info("正在查找登录按钮...")
+            form = "password"
+            logger.warning("登录失败，重试 %s/%s", attempt + 1, max_retry)
             time.sleep(1)
-            
-            login_btns = self.browser.driver.find_elements(
-                By.XPATH, 
-                "//button[contains(text(), '登') or contains(@class, 'login') or contains(@class, 'submit')]"
-            )
-            
-            for btn in login_btns:
-                if btn.is_displayed():
-                    logger.debug(f"找到登录按钮: {btn.text}")
-                    self.browser.driver.execute_script("arguments[0].scrollIntoView(true);", btn)
-                    time.sleep(0.5)
-                    self.browser.driver.execute_script("arguments[0].click();", btn)
-                    logger.info("已点击登录按钮")
-                    return True
-            
-            logger.warning("未找到登录按钮，尝试使用回车键提交")
-            return False
-            
-        except Exception as e:
-            logger.error(f"点击登录按钮失败: {e}", exc_info=True)
-            return False
-    
-    def _get_error_message(self) -> Optional[str]:
-        """获取错误提示信息"""
-        try:
-            error_elements = self.browser.driver.find_elements(
-                By.CSS_SELECTOR, 
-                ".error, .alert, .message, .el-message, .ant-message"
-            )
-            for elem in error_elements:
-                if elem.is_displayed() and elem.text:
-                    return elem.text
-        except:
-            pass
+        return False
+
+    # 兼容旧调用
+    def login(self, url: str, username: str, password: str,
+              auto_captcha: bool = True, max_retry: int = 2) -> bool:
+        return self.ensure_logged_in(url, username, password, auto_captcha, max_retry)
+
+    # ------------------------------------------------------------- 登录内部
+
+    def _wait_form(self, timeout: float) -> Optional[str]:
+        """等待登录表单出现。返回 'external' / 'password' / None。"""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                if self._visible(By.CSS_SELECTOR, "input[type='password']"):
+                    return "password"
+                if self.driver.find_elements(By.XPATH, "//*[contains(text(), '校外用户')]"):
+                    return "external"
+            except Exception:  # noqa: BLE001 - 页面跳转期间会短暂失败
+                pass
+            time.sleep(0.1)
         return None
 
-    def navigate_to_venue(self, venue_name: str = "羽毛球") -> bool:
-        """
-        导航到指定场馆页面
-        
-        Args:
-            venue_name: 场馆名称（如"羽毛球"）
-            
-        Returns:
-            是否成功进入场馆页面
-        """
-        try:
-            logger.info(f"正在查找场馆: {venue_name}")
-            
-            # 等待页面加载完成
-            time.sleep(2)
-            
-            # 多种方式查找羽毛球场馆元素
-            selectors = [
-                # 方式1: 通过data-v属性和文本内容
-                f"//dd[@data-v-30e22189][contains(text(), '{venue_name}')]",
-                # 方式2: 通过title属性
-                f"//dt[@data-v-30e22189][@title='学院路校区-{venue_name}馆']",
-                # 方式3: 通过包含羽毛球的任何元素
-                f"//*[contains(text(), '{venue_name}')][@data-v-30e22189]",
-                # 方式4: 更宽泛的查找
-                f"//dl[@data-v-30e22189]//dd[contains(text(), '{venue_name}')]"
-            ]
-            
-            venue_element = None
-            used_selector = None
-            
-            for selector in selectors:
-                try:
-                    logger.debug(f"尝试选择器: {selector}")
-                    elements = self.browser.driver.find_elements(By.XPATH, selector)
-                    
-                    # 找到第一个可见的元素
-                    for elem in elements:
-                        if elem.is_displayed():
-                            venue_element = elem
-                            used_selector = selector
-                            logger.info(f"找到场馆元素: {selector}")
-                            logger.debug(f"元素文本: {elem.text}")
-                            break
-                    
-                    if venue_element:
-                        break
-                        
-                except NoSuchElementException:
-                    logger.debug(f"选择器 {selector} 未找到元素")
-                    continue
-            
-            # 如果上述方法都失败，尝试查找所有包含"羽毛球"的元素
-            if not venue_element:
-                logger.info("使用备用方案：查找所有包含'羽毛球'的元素")
-                all_elements = self.browser.driver.find_elements(By.XPATH, "//*[contains(text(), '羽毛球')]")
-                logger.info(f"找到 {len(all_elements)} 个包含'羽毛球'的元素")
-                
-                for idx, elem in enumerate(all_elements):
-                    try:
-                        is_displayed = elem.is_displayed()
-                        text = elem.text if elem.text else ""
-                        tag_name = elem.tag_name
-                        logger.debug(f"元素 {idx}: 标签={tag_name}, 可见={is_displayed}, 文本={text}")
-                        
-                        # 优先选择可点击的元素
-                        if is_displayed and (tag_name in ['dd', 'dt', 'a', 'div', 'dl']):
-                            venue_element = elem
-                            logger.info(f"通过备用方案找到元素: {tag_name}, 文本={text}")
-                            break
-                    except Exception as e:
-                        logger.debug(f"检查元素 {idx} 失败: {e}")
-                        continue
-            
-            if not venue_element:
-                logger.error(f"未找到场馆: {venue_name}")
-                self.browser.driver.save_screenshot("venue_not_found.png")
-                logger.info("已保存截图到 venue_not_found.png")
-                return False
-            
-            # 滚动到元素位置
-            self.browser.driver.execute_script("arguments[0].scrollIntoView(true);", venue_element)
-            time.sleep(0.5)
-            
-            # 点击元素
-            logger.info(f"正在点击场馆: {venue_name}")
-            try:
-                # 尝试普通点击
-                self.browser.driver.execute_script("arguments[0].click();", venue_element)
-                logger.info("进入场馆页面")
-            except Exception as e:
-                logger.warning(f"进入场馆页面失败: {e}")
-                raise
-            
-            # 等待页面跳转
-            time.sleep(3)
-            
-            # 检查是否成功进入场馆页面
-            current_url = self.browser.driver.current_url
-            logger.info(f"当前URL: {current_url}")
-            
-            # 保存场馆页面URL
-            self.venue_url = current_url
-            
-            # 检查页面标题或特定元素来确认是否成功
-            page_title = self.browser.driver.title
-            logger.info(f"页面标题: {page_title}")
-            
-            # 如果URL发生了变化或页面标题包含场馆信息，认为成功
-            if 'venue' in current_url or venue_name in page_title:
-                logger.info(f"成功进入{venue_name}场馆页面")
-                return True
-            else:
-                logger.warning(f"可能未成功进入场馆页面，当前标题: {page_title}")
-                self.browser.driver.save_screenshot("venue_page_check.png")
-                # 即使不确定，也返回True继续执行
-                return True
-            
-        except Exception as e:
-            logger.error(f"导航到场馆失败: {e}", exc_info=True)
-            self.browser.driver.save_screenshot("navigate_venue_error.png")
+    def _visible(self, by, selector) -> bool:
+        return any(element.is_displayed() for element in self.driver.find_elements(by, selector))
+
+    def _login_once(self, username: str, password: str, auto_captcha: bool, form: str) -> bool:
+        if form == "external" and not self._click_external_user():
             return False
+        if not self._fill_credentials(username, password):
+            return False
+        if not self._handle_captcha(auto_captcha):
+            return False
+        if not self._click_login_button():
+            return False
+        return self._wait_logged_in(12)
+
+    def _click_external_user(self) -> bool:
+        try:
+            element = WebDriverWait(self.driver, 8).until(
+                EC.element_to_be_clickable((By.XPATH, "//*[contains(text(), '校外用户')]"))
+            )
+            self.driver.execute_script("arguments[0].click();", element)
+            logger.info("已切换到校外用户登录")
+            return self._wait_for(
+                lambda: self._visible(By.CSS_SELECTOR, "input[type='password']"), 8
+            )
+        except TimeoutException:
+            logger.error("未找到「校外用户」入口")
+            return False
+
+    def _fill_credentials(self, username: str, password: str) -> bool:
+        try:
+            field = WebDriverWait(self.driver, 6).until(
+                EC.presence_of_element_located(
+                    (By.CSS_SELECTOR, "input[type='text'], input[name='username']")
+                )
+            )
+            field.clear()
+            field.send_keys(username)
+            secret = self.driver.find_element(By.CSS_SELECTOR, "input[type='password']")
+            secret.clear()
+            secret.send_keys(password)
+            return True
+        except Exception as error:  # noqa: BLE001
+            logger.error("填写账号密码失败: %s", error)
+            return False
+
+    def _handle_captcha(self, auto_captcha: bool) -> bool:
+        field = None
+        for selector in CAPTCHA_INPUTS:
+            elements = [e for e in self.driver.find_elements(By.CSS_SELECTOR, selector) if e.is_displayed()]
+            if elements:
+                field = elements[0]
+                break
+        if not field:
+            return True
+
+        logger.info("检测到图形验证码")
+        if not auto_captcha:
+            code = input("请输入验证码: ").strip()
+            field.send_keys(code)
+            return bool(code)
+
+        if self.solver is not None:
+            return self.solver.solve()
+
+        image = self._find_captcha_image()
+        if not image:
+            logger.error("未找到验证码图片")
+            return False
+        code = self.ocr.recognize(image.screenshot_as_png)
+        if not code:
+            logger.error("验证码识别失败")
+            return False
+        field.clear()
+        field.send_keys(code)
+        logger.info("验证码已填入: %s", code)
+        return True
+
+    def _find_captcha_image(self):
+        selectors = [
+            "span[data-v-57a28888] > img",
+            "div.ivu-form-item-content img",
+            "img[src^='data:image']",
+            "img[src*='captcha']",
+        ]
+        for selector in selectors:
+            for element in self.driver.find_elements(By.CSS_SELECTOR, selector):
+                if element.is_displayed() and element.size.get("width"):
+                    return element
+        return None
+
+    def _click_login_button(self) -> bool:
+        try:
+            candidates = self.driver.find_elements(
+                By.XPATH, "//button[contains(., '登录') or contains(., '登 录')]"
+            )
+            if not candidates:
+                candidates = self.driver.find_elements(By.CSS_SELECTOR, "button.ivu-btn-primary")
+            for button in candidates:
+                if button.is_displayed() and not button.get_attribute("disabled"):
+                    self.driver.execute_script("arguments[0].click();", button)
+                    return True
+            field = self.driver.find_element(By.CSS_SELECTOR, "input[type='password']")
+            field.send_keys(Keys.ENTER)
+            return True
+        except (NoSuchElementException, Exception) as error:  # noqa: BLE001
+            logger.error("点击登录按钮失败: %s", error)
+            return False
+
+    def _wait_logged_in(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                if "login" not in self.driver.current_url:
+                    return True
+                message = self._error_text()
+                if message:
+                    if "验证码" in message:
+                        logger.warning("验证码错误: %s", message)
+                    else:
+                        logger.error("登录报错: %s", message)
+                    return False
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(0.15)
+        return "login" not in self.driver.current_url
+
+    def _error_text(self) -> Optional[str]:
+        for selector in (".ivu-message", ".error", ".alert", ".el-message"):
+            for element in self.driver.find_elements(By.CSS_SELECTOR, selector):
+                if element.is_displayed():
+                    text = (element.text or "").strip()
+                    if text:
+                        return text
+        return None
+
+    def _wait_for(self, predicate, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            try:
+                if predicate():
+                    return True
+            except Exception:  # noqa: BLE001
+                pass
+            time.sleep(0.1)
+        return False
+
+    # ------------------------------------------------------------- 场馆导航
+
+    def on_venue_page(self) -> bool:
+        try:
+            return bool(self.driver.execute_script(
+                "return !!document.querySelector('.date_box > div, .reserveTable .spaceTable table');"
+            ))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def navigate_to_venue(self, venue_name: str = "羽毛球") -> bool:
+        """进入场馆页；以「日期选择条出现」为成功判据。"""
+        if self.on_venue_page():
+            logger.info("已经在场馆页面")
+            return True
+
+        logger.info("进入场馆: %s", venue_name)
+        element = self._find_venue(venue_name)
+        if not element:
+            logger.error("未找到场馆入口: %s", venue_name)
+            self._screenshot("venue_not_found.png")
+            return False
+
+        self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", element)
+        try:
+            element.click()
+        except Exception:  # noqa: BLE001
+            self.driver.execute_script("arguments[0].click();", element)
+
+        if not self._wait_for(self.on_venue_page, 20):
+            logger.error("进入 %s 后没有看到预约表", venue_name)
+            self._screenshot("venue_not_loaded.png")
+            return False
+
+        # 有些校区会弹公告，关掉它，避免挡住场格
+        self._close_modal()
+        logger.info("已进入 %s 场馆页面", venue_name)
+        return True
+
+    def _find_venue(self, venue_name: str):
+        xpaths = [
+            f"//dd[contains(., '{venue_name}')]",
+            f"//dt[contains(., '{venue_name}')]",
+            f"//a[contains(., '{venue_name}')]",
+            f"//*[contains(text(), '{venue_name}')]/ancestor-or-self::*[self::dd or self::dt or self::a or self::li][1]",
+            f"//*[contains(text(), '{venue_name}')]",
+        ]
+        for xpath in xpaths:
+            elements = self.driver.find_elements(By.XPATH, xpath)
+            for element in elements:
+                try:
+                    if element.is_displayed():
+                        return element
+                except Exception:  # noqa: BLE001
+                    continue
+        return None
+
+    def _close_modal(self) -> bool:
+        try:
+            buttons = self.driver.find_elements(
+                By.XPATH, "//button[.//span[normalize-space(text())='关闭'] or normalize-space(text())='关闭']"
+            )
+            for button in buttons:
+                if button.is_displayed():
+                    self.driver.execute_script("arguments[0].click();", button)
+                    return True
+        except Exception:  # noqa: BLE001
+            pass
+        return False
+
+    def _screenshot(self, name: str):
+        try:
+            self.driver.save_screenshot(name)
+        except Exception:  # noqa: BLE001
+            pass

@@ -1,0 +1,120 @@
+# 羽毛球自动预约 · 配置示例
+#
+# 复制为 config.yaml 后修改（config.yaml 已被 .gitignore 忽略，不会进仓库）：
+#   copy config.example.yaml config.yaml
+# 也可以直接运行 `python main.py --web`，在网页里编辑，保存时会自动写 config.yaml。
+
+user:
+  # 登录手机号 / 学工号
+  username: ""
+  password: ""
+  # 接收通知的邮箱（留空则不发送）
+  email: ""
+  # 平台里已经加过的同伴姓名，留空表示只订自己的
+  partner_name: ""
+
+booking:
+  venue_type: "羽毛球"
+  # 平台每天放场的时间（北京时间）
+  target_time_in_day: "07:00:00"
+  # 2 表示每天 7 点抢后天的场；1 表示抢明天
+  booking_days_ahead: 2
+  # 指定入场日（YYYY-MM-DD）；填了以后就不再按 booking_days_ahead 推算
+  booking_date: ""
+  # 提前多少秒启动浏览器 / 恢复登录，建议 120~300
+  advance_time: 120
+  # 优先级从高到低：court 填「任意」表示不限场地
+  preferences:
+    - court: "任意"
+      start: "19:00"
+      end: "21:00"
+    - court: "训练馆3号"
+      start: "19:00"
+      end: "20:00"
+  # 只抢到部分时段时是否仍然提交（false 更安全，避免订到 1 小时）
+  allow_partial: false
+  # 候选都不满足时，退而求其次抢「当天最早的一段空场」（保底，False 表示宁缺毋滥）
+  fallback_any: false
+  # 一次放场最多提交几次；平台有频控，建议不超过 3
+  max_attempts: 3
+
+login:
+  url: "https://ggtypt.cumtb.edu.cn/venue/login"
+  # 无头模式更容易被识别为自动化，抢场建议 false
+  headless: false
+  auto_captcha: true
+  max_retry: 2
+  # Chrome 用户目录：保存 Cookie，第二天 07:00 不用重新登录和过验证码
+  profile_dir: ".chrome-profile"
+  session_check: true
+
+polling:
+  # 空场轮询间隔（秒）
+  polling_interval: 60
+  # 想盯的时段，空列表表示不做筛选
+  polling_time_slots:
+    - "19:00-20:00"
+  # 查询今天 + 未来几天的偏移
+  polling_date_offsets: [0, 1, 2]
+  # 轮询发现空场后是否自动下单
+  is_auto_booking: false
+
+email:
+  smtp_server: ""
+  smtp_port: 465
+  sender_email: ""
+  sender_password: ""
+  use_ssl: true
+
+# 飞书群机器人：群里「添加机器人 → 自定义机器人」拿到 webhook 填进来即可
+feishu:
+  webhook: ""
+  # 机器人开了「签名校验」才需要填
+  secret: ""
+  # 消息里 @所有人
+  mention_all: false
+  # 轮询发现空场时推送
+  notify_availability: true
+  # 抢到时推送
+  notify_success: true
+  # 没抢到也推送（每天一条，嫌吵就关掉）
+  notify_failure: false
+
+runtime:
+  # 手工时钟校正（毫秒）：0 表示用服务器 Date 头自动估算
+  clock_offset_ms: 0
+  # 放场前多久开始探测（毫秒）
+  release_probe_lead_ms: 1500
+  # 探测间隔（毫秒）：day/info 一次约 90KB，200ms 已经比较激进，别再调小
+  release_probe_interval_ms: 200
+  # 放场后继续重试多久（毫秒）
+  release_grace_ms: 4000
+  # 刷新预约表方式：auto（先点日期页签，不行再整页刷新）/ click / reload
+  grid_refresh: "auto"
+  # 等待平台回执的最长时间（毫秒）
+  submit_timeout_ms: 6000
+  # 抢到之后浏览器保持打开的秒数（订单需要在同一个窗口付款）
+  keep_open_after_success: 600
+
+captcha:
+  # 点选验证码识别来源：local（本地 OCR）或 ttshitu（图鉴打码平台，typeid=20）
+  # 详见 docs/ttshitu.md
+  provider: local
+  # 平台失败时是否回落到本地 OCR
+  fallback_to_local: true
+  ttshitu:
+    username: ""
+    password: ""
+    # 43 = 传标题文本的点选（闭集匹配，正确率最高）
+    type_id: 43
+    timeout_seconds: 8.0
+  # 一次验证码最多尝试几次
+  # AJ-Captcha 失败会按分钟计数并锁定 get 接口，建议保持 1
+  max_attempts: 1
+  # 识别结果的长度范围，用来过滤掉明显不对的结果
+  min_length: 4
+  max_length: 6
+  # 多种预处理投票：更准，多花几十毫秒
+  ensemble: true
+  # 开售前先尝试把验证码做掉（能提前解决就省掉 07:00 的一次交互）
+  pre_solve: true

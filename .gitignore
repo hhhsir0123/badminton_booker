@@ -1,4 +1,15 @@
 __pycache__/
+*.pyc
 captcha_images/
 logs/
 config.yaml
+.chrome-profile/
+.config-*.yaml
+*.png
+
+# 浏览器 profile / 驱动 / 联调临时产物
+.chrome-*/
+drivers/
+*.txt
+!docs/**/*.txt
+!requirements.txt

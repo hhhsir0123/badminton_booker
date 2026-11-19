@@ -1,464 +1,434 @@
+"""读取场馆预约表。
+
+核心变化（相对旧版）：
+- DOM 读取一次 JS 完成，只返回纯 JSON，不再把 WebElement 传回 Python；
+- 等待渲染、等待 day/info 响应都在页面内完成，Python 侧没有 sleep；
+- 保留页面上「时段原文」，点击时用原文精确匹配，避免把 08:00~09:00 归一化成
+  08:00-09:00 后点不到格子；
+- 支持「场地为列 / 场地为行」两种表头；
+- 提供 probe()：直接请求页面自己用的 day/info 接口判断是否放场（只做加速信号）。
 """
-查询模块
-"""
+from __future__ import annotations
+
+import re
 import time
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
-from typing import List, Dict, Optional
-from .browser import BrowserManager
+from datetime import date as calendar_date, datetime, timedelta, timezone
+from typing import Any, Dict, Iterator, List, Optional
+
+from selenium.common.exceptions import StaleElementReferenceException, TimeoutException
+from selenium.webdriver.support.ui import WebDriverWait
+
+from .api_client import ApiClient
+from .page_js import (
+    CLICK_DATE_JS,
+    FRAMES_JS,
+    HELPERS,
+    SELECT_CELLS_JS,
+    SNAPSHOT_JS,
+)
 from ..utils.logger import setup_logger
-from datetime import datetime
-from selenium.webdriver.support.ui import WebDriverWait as _WebDriverWait
-from selenium.webdriver.support import expected_conditions as _EC
-from selenium.webdriver.common.by import By as _By
 
 logger = setup_logger(__name__)
 
+BEIJING = timezone(timedelta(hours=8))
+TIME_RANGE = re.compile(r"(\d{1,2}:\d{2})\s*[-–—~至]\s*(\d{1,2}:\d{2})")
+DATE_LABEL = re.compile(r"(\d{1,2})\s*[月/]\s*(\d{1,2})")
+# 前端会按「状态 class + 占用百分比 class」叠加，newReservation = 容量 90% 以上被占
+RESERVED_STATES = {
+    "reserved", "reservation", "newReservation", "disabled", "selected",
+    "sold", "locked", "adminTake",
+}
+
+
+def normalize_clock(value: str) -> str:
+    """'8:00' / '08:00' → '08:00'。"""
+    hour, minute = value.strip().split(":")
+    return f"{int(hour):02d}:{int(minute):02d}"
+
+
+def parse_slot(label: str) -> Optional[tuple]:
+    """从页面时段原文解析 (开始, 结束)，统一成 HH:MM。"""
+    match = TIME_RANGE.search(label or "")
+    if not match:
+        return None
+    start, end = normalize_clock(match.group(1)), normalize_clock(match.group(2))
+    return (start, end) if start < end else None
+
+
+def slot_key(label: str) -> Optional[str]:
+    bounds = parse_slot(label)
+    return f"{bounds[0]}-{bounds[1]}" if bounds else None
+
+
 class QueryManager:
-    """查询管理器"""
-    
-    def __init__(self, browser: BrowserManager):
-        """
-        初始化查询管理器
-        
-        Args:
-            browser: 浏览器管理器
-        """
+    """场馆预约表读取器。"""
+
+    def __init__(self, browser):
         self.browser = browser
-        self.venue_url = None  # 保存场馆页面URL
-    
-    def navigate_to_venue(self, venue_name: str = "羽毛球") -> bool:
-        """
-        导航到指定场馆页面
-        
-        Args:
-            venue_name: 场馆名称（如"羽毛球"）
-            
-        Returns:
-            是否成功进入场馆页面
-        """
+        self.last_date: Optional[str] = None
+        self._helpers_installed = False
+        self._cdp = False
+        self._api: Optional[ApiClient] = None
+        self._api_site: Optional[str] = None
+        self._api_expire = 0.0
+
+    # ------------------------------------------------------------------ 基础
+
+    @property
+    def driver(self):
+        return self.browser.driver
+
+    def _js(self, script: str, *args):
+        return self.driver.execute_script(script, *args)
+
+    def _async(self, script: str, *args):
+        return self.driver.execute_async_script(script, *args)
+
+    def wait(self, predicate, timeout: float = 12):
+        return WebDriverWait(
+            self.driver, timeout, poll_frequency=0.05,
+            ignored_exceptions=(StaleElementReferenceException,),
+        ).until(predicate)
+
+    def _wait_false(self, predicate, timeout: float) -> bool:
         try:
-            logger.info(f"正在查找场馆: {venue_name}")
-            
-            # 等待页面加载完成
-            time.sleep(2)
-            
-            # 多种方式查找羽毛球场馆元素
-            selectors = [
-                # 方式1: 通过data-v属性和文本内容
-                f"//dd[@data-v-30e22189][contains(text(), '{venue_name}')]",
-                # 方式2: 通过title属性
-                f"//dt[@data-v-30e22189][@title='学院路校区-{venue_name}馆']",
-                # 方式3: 通过包含羽毛球的任何元素
-                f"//*[contains(text(), '{venue_name}')][@data-v-30e22189]",
-                # 方式4: 更宽泛的查找
-                f"//dl[@data-v-30e22189]//dd[contains(text(), '{venue_name}')]"
-            ]
-            
-            venue_element = None
-            used_selector = None
-            
-            for selector in selectors:
-                try:
-                    logger.debug(f"尝试选择器: {selector}")
-                    elements = self.browser.driver.find_elements(By.XPATH, selector)
-                    
-                    # 找到第一个可见的元素
-                    for elem in elements:
-                        if elem.is_displayed():
-                            venue_element = elem
-                            used_selector = selector
-                            logger.info(f"找到场馆元素: {selector}")
-                            logger.debug(f"元素文本: {elem.text}")
-                            break
-                    
-                    if venue_element:
-                        break
-                        
-                except NoSuchElementException:
-                    logger.debug(f"选择器 {selector} 未找到元素")
-                    continue
-            
-            # 如果上述方法都失败，尝试查找所有包含"羽毛球"的元素
-            if not venue_element:
-                logger.info("使用备用方案：查找所有包含'羽毛球'的元素")
-                all_elements = self.browser.driver.find_elements(By.XPATH, "//*[contains(text(), '羽毛球')]")
-                logger.info(f"找到 {len(all_elements)} 个包含'羽毛球'的元素")
-                
-                for idx, elem in enumerate(all_elements):
-                    try:
-                        is_displayed = elem.is_displayed()
-                        text = elem.text if elem.text else ""
-                        tag_name = elem.tag_name
-                        logger.debug(f"元素 {idx}: 标签={tag_name}, 可见={is_displayed}, 文本={text}")
-                        
-                        # 优先选择可点击的元素
-                        if is_displayed and (tag_name in ['dd', 'dt', 'a', 'div', 'dl']):
-                            venue_element = elem
-                            logger.info(f"通过备用方案找到元素: {tag_name}, 文本={text}")
-                            break
-                    except Exception as e:
-                        logger.debug(f"检查元素 {idx} 失败: {e}")
-                        continue
-            
-            if not venue_element:
-                logger.error(f"未找到场馆: {venue_name}")
-                return False
-            
-            # 获取元素信息用于调试
-            try:
-                logger.info(f"场馆元素信息:")
-                logger.info(f"  - 标签: {venue_element.tag_name}")
-                logger.info(f"  - 文本: {venue_element.text}")
-                logger.info(f"  - 位置: {venue_element.location}")
-                logger.info(f"  - 大小: {venue_element.size}")
-            except Exception as e:
-                logger.warning(f"获取元素信息失败: {e}")
-            
-            # 滚动到元素位置
-            self.browser.driver.execute_script("arguments[0].scrollIntoView(true);", venue_element)
-            time.sleep(0.5)
-            
-            # 点击元素
-            logger.info(f"正在点击场馆: {venue_name}")
-            try:
-                # 尝试普通点击
-                self.browser.driver.execute_script("arguments[0].click();", venue_element)
-            except Exception as e:
-                logger.warning(f"点击场馆失败: {e}")
-            
-            # 等待页面跳转
-            time.sleep(3)
-            
-            # 检查是否成功进入场馆页面
-            current_url = self.browser.driver.current_url
-            logger.info(f"当前URL: {current_url}")
-            
-            # 保存场馆页面URL
-            self.venue_url = current_url
-            
-            # 检查页面标题或特定元素来确认是否成功
-            page_title = self.browser.driver.title
-            logger.info(f"页面标题: {page_title}")
-            
-            # 如果URL发生了变化或页面标题包含场馆信息，认为成功
-            if 'venue' in current_url or venue_name in page_title:
-                logger.info(f"成功进入{venue_name}场馆页面")
-                return True
-            else:
-                logger.warning(f"可能未成功进入场馆页面，当前标题: {page_title}")
-                return True
-        except Exception as e:
-            logger.error(f"导航到场馆失败: {e}", exc_info=True)
+            self.wait(predicate, timeout)
+            return True
+        except TimeoutException:
             return False
-    
-    def parse_court_availability(self) -> Dict[str, List[str]]:
-        """
-        解析当前页面的场地可用性
-        
-        Returns:
-            字典，格式：{'场馆名称': ['可用时间段1', '可用时间段2', ...]}
-            例如：{'训练馆3号': ['08:00-09:00'], '训练馆4号': ['08:00-09:00', '10:00-11:00']}
-        """
+
+    def install(self):
+        """把工具函数注入每个新文档（刷新/跳转后依然存在）。"""
         try:
-            logger.info("开始解析场地可用性...")
-            
-            # 查找表格
-            table = self.browser.driver.find_element(
-                By.CSS_SELECTOR, 
-                "div.spaceTable table[data-v-6fb750cc]"
+            self.driver.execute_cdp_cmd(
+                "Page.addScriptToEvaluateOnNewDocument", {"source": HELPERS}
             )
-            
-            # 获取表头（场馆名称）
-            court_names = []
-            header_cells = table.find_elements(By.XPATH, ".//thead//td")
-            
-            for cell in header_cells[1:]:  # 跳过第一个"时间段"列
-                try:
-                    # 提取场馆名称
-                    court_name = cell.text.strip()
-                    # 移除可能的箭头符号
-                    court_name = court_name.replace('→', '').strip()
-                    if court_name:
-                        court_names.append(court_name)
-                        logger.debug(f"找到场馆: {court_name}")
-                except Exception as e:
-                    logger.warning(f"解析场馆名称失败: {e}")
-                    court_names.append(f"未知场馆{len(court_names)+1}")
-            
-            logger.info(f"共找到 {len(court_names)} 个场馆: {court_names}")
-            
-            # 初始化结果字典
-            availability = {name: [] for name in court_names}
-            
-            # 获取所有行
-            rows = table.find_elements(By.XPATH, ".//tbody/tr")
-            logger.info(f"共找到 {len(rows)} 个时间段")
-            
-            for row in rows:
-                try:
-                    # 获取时间段
-                    cells = row.find_elements(By.TAG_NAME, "td")
-                    if len(cells) == 0:
-                        continue
-                    
-                    # 第一列是时间段
-                    time_slot = cells[0].text.strip()
-                    logger.debug(f"处理时间段: {time_slot}")
-                    
-                    # 遍历每个场馆的状态
-                    for idx, cell in enumerate(cells[1:]):  # 跳过时间段列
-                        if idx >= len(court_names):
-                            break
-                        
-                        court_name = court_names[idx]
-                        
-                        try:
-                            # 查找状态元素
-                            # 可用场地：class包含"free"，显示价格
-                            # 已售场地：class包含"reserved"，显示"已售"
-                            status_div = cell.find_element(By.CSS_SELECTOR, "div.reserveBlock")
-                            class_attr = status_div.get_attribute("class")
-                            
-                            # 判断是否可用
-                            if "free" in class_attr:
-                                # 可用场地
-                                price_elem = status_div.find_element(By.TAG_NAME, "p")
-                                price = price_elem.text.strip()
-                                availability[court_name].append(time_slot)
-                                logger.debug(f"  {court_name} - {time_slot}: 可用 ({price})")
-                            elif "reserved" in class_attr:
-                                # 已售
-                                logger.debug(f"  {court_name} - {time_slot}: 已售")
-                            else:
-                                logger.debug(f"  {court_name} - {time_slot}: 未知状态 ({class_attr})")
-                                
-                        except NoSuchElementException:
-                            logger.debug(f"  {court_name} - {time_slot}: 无法获取状态")
-                            continue
-                        
-                except Exception as e:
-                    logger.warning(f"解析行数据失败: {e}")
+            self._cdp = True
+        except Exception as error:  # noqa: BLE001 - 非 Chromium 内核时降级
+            logger.warning("CDP 注入不可用，将按需注入: %s", error)
+            self._cdp = False
+        self._helpers_installed = False
+        self._ensure_helpers()
+
+    def _ensure_helpers(self):
+        if self._helpers_installed:
+            return
+        try:
+            present = self._js("return typeof window.__bb !== 'undefined';")
+        except Exception:  # noqa: BLE001
+            present = False
+        if not present:
+            self._js(HELPERS)
+        self._helpers_installed = True
+
+    def reset_helpers_cache(self):
+        """页面刷新后调用；CDP 注入生效时不需要重新注入。"""
+        self._helpers_installed = self._cdp
+
+    # ------------------------------------------------------------- 日期控件
+
+    def tabs(self) -> List[Dict[str, Any]]:
+        return self._js(
+            """
+            return [...document.querySelectorAll('.date_box > div')]
+                .filter(function (e) { return e.getClientRects().length; })
+                .map(function (e) { return { text: (e.innerText || '').trim(), cls: String(e.className || '') }; });
+            """
+        ) or []
+
+    def today(self) -> calendar_date:
+        value = self._js(
+            """
+            const format = new Intl.DateTimeFormat('sv-SE', {
+                timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
+            });
+            return format.format(new Date());
+            """
+        )
+        return calendar_date.fromisoformat(value)
+
+    def index_of(self, wanted: str) -> Optional[int]:
+        """按「今天 + 序号」推导每个日期页签对应的真实日期。
+
+        站点只显示「12月06日」，所以必须用序号反推年份，否则跨年会把同月同日认错。
+        """
+        day = calendar_date.fromisoformat(wanted)
+        tabs = self.tabs()
+        if not tabs:
+            return None
+        today = self.today()
+        for index, tab in enumerate(tabs):
+            text = tab.get("text", "")
+            match = DATE_LABEL.search(text)
+            if not match:
+                continue
+            month, day_of_month = int(match.group(1)), int(match.group(2))
+            expected = today + timedelta(days=index)
+            if (month, day_of_month) == (expected.month, expected.day) and expected == day:
+                return index
+        return None
+
+    def is_date_exist(self, wanted: str) -> bool:
+        try:
+            return self.index_of(wanted) is not None
+        except Exception:  # noqa: BLE001
+            return False
+
+    def is_active(self, wanted: str) -> bool:
+        index = self.index_of(wanted)
+        if index is None:
+            return False
+        tabs = self.tabs()
+        return "active" in tabs[index]["cls"].split()
+
+    def _click_tab(self, index: int, timeout: int = 1200) -> Dict[str, Any]:
+        return self._async(CLICK_DATE_JS, index, timeout) or {"ok": False, "error": "no-result"}
+
+    def reload(self):
+        self.driver.refresh()
+        self.reset_helpers_cache()
+        self.last_date = None
+        self._wait_false(lambda _: self.tabs(), 15)
+
+    def focus_date(self, wanted: str, fresh: bool = False, refresh: str = "auto") -> bool:
+        """让预约表显示 wanted 这一天的数据。fresh=True 时强制重新取一次数据。"""
+        self.last_date = None
+        if not self._wait_false(lambda _: self.tabs(), 15):
+            logger.error("页面上没有日期选择条，可能还没进入场馆页面")
+            return False
+        self._ensure_helpers()
+        index = self.index_of(wanted)
+        if index is None:
+            logger.info("日期 %s 不在当前可预约窗口内", wanted)
+            return False
+
+        active = "active" in self.tabs()[index]["cls"].split()
+        if active and not fresh:
+            self.last_date = wanted
+            return True
+
+        if refresh == "reload":
+            self.reload()
+            index = self.index_of(wanted)
+            if index is None:
+                return False
+
+        started_at = datetime.now(BEIJING)
+        result = self._click_tab(index)
+        if not result.get("ok") and refresh == "auto":
+            # 部分前端在页签已选中时不会再发请求，退化成整页刷新
+            logger.info("点击日期页签没有触发数据请求（%s），改用整页刷新", result.get("error"))
+            self.reload()
+            index = self.index_of(wanted)
+            if index is None:
+                return False
+            result = self._click_tab(index)
+
+        if not self._wait_false(lambda _: self.is_active(wanted), 8):
+            logger.error("日期 %s 没有切换到选中状态", wanted)
+            return False
+
+        # 等两帧，确保 Vue 已经把新数据写进 DOM
+        try:
+            self._async(FRAMES_JS)
+        except Exception:  # noqa: BLE001
+            pass
+
+        self.last_date = wanted
+        logger.debug(
+            "日期 %s 就绪，数据响应耗时 %sms，整体 %sms",
+            wanted, result.get("ms"), int((datetime.now(BEIJING) - started_at).total_seconds() * 1000),
+        )
+        return True
+
+    # --------------------------------------------------------------- 读取数据
+
+    def snapshot(self) -> Optional[Dict[str, Any]]:
+        page = self._async(SNAPSHOT_JS) or {}
+        if page.get("error"):
+            return None
+        return page
+
+    @staticmethod
+    def free_slots(page: Dict[str, Any]) -> Dict[str, Dict[str, str]]:
+        """{场地: {标准时段: 页面原文}}，只保留可预订的格子。"""
+        labels = page.get("labels") or []
+        reversed_axes = bool(page.get("reversed"))
+        inventory: Dict[str, Dict[str, str]] = {}
+
+        for row in page.get("rows") or []:
+            row_label = row.get("label") or ""
+            for offset, cell in enumerate(row.get("cells") or [], start=1):
+                if not cell or offset >= len(labels):
                     continue
-            
-            # 统计结果
-            total_available = sum(len(slots) for slots in availability.values())
-            logger.info(f"解析完成，共找到 {total_available} 个可用时间段")
-            
-            # 输出每个场馆的可用情况
-            for court_name, slots in availability.items():
-                if slots:
-                    logger.info(f"  {court_name}: {len(slots)} 个时间段可用 - {slots}")
+                if reversed_axes:
+                    court, slot = row_label, labels[offset]
                 else:
-                    logger.debug(f"  {court_name}: 无可用时间段")
-            
-            return availability
-            
-        except NoSuchElementException as e:
-            logger.error(f"未找到表格元素: {e}")
-            return {}
-        except Exception as e:
-            logger.error(f"解析场地可用性失败: {e}", exc_info=True)
-            return {}
-    
-    def query_available_courts(self, date: str = None) -> Dict[str, List[str]]:
-        """
-        查询可用场地（对外接口）
-        
-        Args:
-            date: 日期（格式：YYYY-MM-DD），如果为None则查询当前页面
-            
-        Returns:
-            可用场地字典
-        """
-        logger.info(f"查询可用场地: 日期={date if date else '当前页面'}")
-        
-        try:
-            # TODO: 如果指定了日期，需要先选择日期
-            if date:
-                self.select_date(date)
-            
-            # 解析当前页面的场地可用性
-            return self.parse_court_availability()
-            
-        except Exception as e:
-            logger.error(f"查询失败: {e}", exc_info=True)
-            return {}
+                    court, slot = labels[offset], row_label
+                court = court.replace("→", "").strip()
+                key = slot_key(slot)
+                if not court or not key:
+                    continue
+                states = set(cell.get("classes") or [])
+                if "free" in states and not states.intersection(RESERVED_STATES):
+                    inventory.setdefault(court, {})[key] = slot
+        return inventory
 
-    def is_date_exist(self, date: str) -> bool:
-        try:
-            logger.info(f"选择日期: {date}")
-            # 实现日期选择逻辑
-            if not date:
-                logger.warning("日期参数为空，跳过日期选择")
-                return False
-            
-            # 解析日期格式 YYYY-MM-DD
-            try:
-                date_obj = datetime.strptime(date, "%Y-%m-%d")
-                # 格式化为 "12月06日" 格式
-                target_date_text = f"{date_obj.month}月{date_obj.day:02d}日"
-                logger.info(f"目标日期文本: {target_date_text}")
-            except ValueError as e:
-                logger.error(f"日期格式错误，应为YYYY-MM-DD: {e}")
-                return False
-            
-            # 查找所有日期选择框中的日期元素
-            try:
-                date_elements = self.browser.driver.find_elements(
-                    By.CSS_SELECTOR,
-                    "div.date_box span[data-v-6fb750cc]"
-                )
-                
-                logger.info(f"找到 {len(date_elements)} 个日期元素: {[elem.text for elem in date_elements]}")
-                
-                # 遍历查找匹配的日期
-                for elem in date_elements:
-                    try:
-                        elem_text = elem.text.strip()
-                        logger.debug(f"检查日期元素: {elem_text}")
-                        
-                        if target_date_text in elem_text:
-                            return True
-                    except Exception as e:
-                        logger.debug(f"读取日期元素失败: {e}")
-                        continue
-            except NoSuchElementException:
-                logger.error("[is_date_exist] 未找到日期选择框")
-                return False
-        except Exception as e:
-            logger.error(f"日期不存在: {e}", exc_info=True)
+    def _turn(self, page: Dict[str, Any], direction: str) -> Optional[Dict[str, Any]]:
+        """翻一页。direction 是 'prev' / 'next'。"""
+        script = """
+        const done = arguments[arguments.length - 1];
+        const [direction] = arguments;
+        const visible = e => e && e.getClientRects().length;
+        const table = [...document.querySelectorAll('.reserveTable .spaceTable table')].filter(visible)[0];
+        if (!table || !table.tHead) { done(false); return; }
+        const head = table.tHead.rows[0];
+        const arrow = [...head.querySelectorAll('.ivu-icon-ios-arrow-' + (direction === 'prev' ? 'back' : 'forward'))]
+            .filter(visible)[0];
+        if (!arrow) { done(false); return; }
+        arrow.click();
+        done(true);
+        """
+        if not self._js(script, direction):
+            return None
+        before = tuple(page.get("labels") or [])
+        deadline = time.monotonic() + 2.5
+        while time.monotonic() < deadline:
+            candidate = self.snapshot()
+            if candidate and tuple(candidate.get("labels") or []) != before:
+                return candidate
+            time.sleep(0.04)
+        return None
+
+    @staticmethod
+    def page_courts(page: Dict[str, Any]) -> List[str]:
+        """当前页出现过的场地名（含已售罄的），用于翻页定位。"""
+        labels = page.get("labels") or []
+        if page.get("reversed"):
+            return [(row.get("label") or "").strip() for row in page.get("rows") or []]
+        return [label.replace("→", "").strip() for label in labels[1:]]
+
+    def first_page(self) -> Optional[Dict[str, Any]]:
+        page = self.snapshot()
+        if not page:
+            return None
+        guard = 0
+        while page.get("prev") and guard < 8:
+            nxt = self._turn(page, "prev")
+            if not nxt:
+                return page
+            page, guard = nxt, guard + 1
+        return page
+
+    def iter_pages(self) -> Iterator[Dict[str, Any]]:
+        page = self.first_page()
+        if not page:
+            return
+        seen = set()
+        while True:
+            key = tuple(page.get("labels") or [])
+            if key in seen:
+                logger.warning("分页出现重复表头，停止遍历")
+                return
+            seen.add(key)
+            yield page
+            if not page.get("next"):
+                return
+            nxt = self._turn(page, "next")
+            if not nxt:
+                return
+            page = nxt
+
+    def scan(self, wanted: str) -> Dict[str, Dict[str, str]]:
+        """读完整张表（必要时翻页），返回 {场地: {时段: 原文}}。"""
+        if not self.focus_date(wanted, fresh=True):
+            return {}
+        merged: Dict[str, Dict[str, str]] = {}
+        for page in self.iter_pages():
+            for court, slots in self.free_slots(page).items():
+                merged.setdefault(court, {}).update(slots)
+        return merged
+
+    def ensure_visible(self, court: str) -> bool:
+        """确保目标场地所在的页是当前页（翻页）。"""
+        page = self.snapshot()
+        if not page:
             return False
-
-    def select_date(self, date: str) -> bool:
-        """
-        选择日期
-        
-        Args:
-            date: 日期（格式：YYYY-MM-DD）
-            
-        Returns:
-            是否选择成功
-        """
-        try:
-            logger.info(f"选择日期: {date}")
-            # 实现日期选择逻辑
-            if not date:
-                logger.warning("日期参数为空，跳过日期选择")
-                return False
-            
-            # 解析日期格式 YYYY-MM-DD
-            try:
-                date_obj = datetime.strptime(date, "%Y-%m-%d")
-                # 格式化为 "12月06日" 格式
-                target_date_text = f"{date_obj.month}月{date_obj.day:02d}日"
-                logger.info(f"目标日期文本: {target_date_text}")
-            except ValueError as e:
-                logger.error(f"日期格式错误，应为YYYY-MM-DD: {e}")
-                return False
-            
-            # 查找所有日期选择框中的日期元素
-            try:
-                date_elements = self.browser.driver.find_elements(
-                    By.CSS_SELECTOR,
-                    "div.date_box span[data-v-6fb750cc]"
-                )
-                
-                logger.info(f"找到 {len(date_elements)} 个日期元素")
-                
-                # 遍历查找匹配的日期
-                target_element = None
-                for elem in date_elements:
-                    try:
-                        elem_text = elem.text.strip()
-                        logger.debug(f"检查日期元素: {elem_text}")
-                        
-                        if target_date_text in elem_text:
-                            target_element = elem
-                            logger.info(f"找到目标日期: {elem_text}")
-                            break
-                    except Exception as e:
-                        logger.debug(f"读取日期元素失败: {e}")
-                        continue
-                
-                if not target_element:
-                    logger.error(f"未找到日期 {target_date_text}")
-                    return False
-                
-                # 滚动到元素位置
-                self.browser.driver.execute_script("arguments[0].scrollIntoView(true);", target_element)
-                time.sleep(0.5)
-                
-                # 点击日期元素
-                logger.info(f"点击日期: {target_date_text}")
-                try:
-                    self.browser.driver.execute_script("arguments[0].click();", target_element)
-                except Exception as e:
-                    logger.warning(f"选择日期失败: {e}")
-                
-                # 等待页面刷新
-                time.sleep(0.5)
-                logger.info("日期选择完成，页面已刷新")
-                
-            except NoSuchElementException:
-                logger.error("未找到日期选择框")
-                return False
+        if court in self.page_courts(page):
             return True
-        except Exception as e:
-            logger.error(f"选择日期失败: {e}", exc_info=True)
-            return False
-        
+        for candidate in self.iter_pages():
+            if court in self.page_courts(candidate):
+                return True
+        return False
+
+    # ------------------------------------------------------------- 对外兼容层
+
+    def query_available_courts(self, wanted: str) -> Dict[str, List[str]]:
+        return {court: sorted(slots) for court, slots in self.scan(wanted).items()}
+
+    def parse_court_availability(self) -> Dict[str, List[str]]:
+        if not self.last_date:
+            raise RuntimeError("请先选择日期")
+        inventory: Dict[str, List[str]] = {}
+        for page in self.iter_pages():
+            for court, slots in self.free_slots(page).items():
+                inventory.setdefault(court, []).extend(sorted(slots))
+        return {court: sorted(set(slots)) for court, slots in inventory.items()}
+
+    def probe(self, wanted: str) -> Dict[str, Any]:
+        """直接请求 day/info 判断是否放场（带签名，约 30~60ms）。
+
+        这是页面自己用的接口，返回体积在放场瞬间会明显变化，用来做放场探测。
+        拿不到会话信息时返回 status=0，调用方会退化成「点日期页签刷新」。
+        """
+        client = self._api_client()
+        if client is None or not self._api_site:
+            return {"status": 0, "length": 0, "error": "no-session"}
+        started = time.monotonic()
+        params = {
+            "venueSiteId": self._api_site,
+            "searchDate": wanted,
+            "hasReserveInfo": "1",
+            "nocache": str(int(time.time() * 1000)),
+        }
+        status, body = client.get("/api/reservation/day/info", params)
+        return {
+            "status": status,
+            "length": len(body or ""),
+            "ms": (time.monotonic() - started) * 1000,
+        }
+
+    def _api_client(self) -> Optional[ApiClient]:
+        """从页面拿 origin / 会话 token / venueSiteId，缓存 5 分钟。"""
+        if self._api is not None and time.monotonic() < self._api_expire:
+            return self._api
+        try:
+            origin = self._js("return location.origin;")
+            token = self._js("return localStorage.getItem('dataSix') || '';") or ""
+            match = re.search(r"venue-reservation/(\d+)", self.driver.current_url or "")
+            site = match.group(1) if match else ""
+            if not origin or not token:
+                return None
+            self._api = ApiClient(origin, token)
+            self._api_site = site
+            self._api_expire = time.monotonic() + 300
+            logger.info("接口会话已就绪（venueSiteId=%s）", site or "未知")
+            return self._api
+        except Exception as error:  # noqa: BLE001
+            logger.debug("获取接口会话失败: %s", error)
+            return None
+
     def click_close_button(self) -> bool:
-        """找到页面中的关闭按钮并点击它"""
-        try:
-            close_btn = None
-            xpath_selector = "//button[.//span[normalize-space(text())='关闭']]"
-            css_selector = "button.ivu-btn.ivu-btn-primary"
-            if not close_btn:
-                try:
-                    elems = self.browser.driver.find_elements(By.XPATH, xpath_selector)
-                    for e in elems:
-                        if e.is_displayed():
-                            close_btn = e
-                            break
-                except Exception:
-                    close_btn = None
+        return bool(self._js(
+            """
+            const btn = [...document.querySelectorAll('.ivu-modal-wrap button, .ivu-modal-wrap .ivu-modal-close')]
+                .filter(function (e) { return e.getClientRects().length; })[0];
+            if (!btn) { return false; }
+            btn.click();
+            return true;
+            """
+        ))
 
-            if not close_btn:
-                try:
-                    elems = self.browser.driver.find_elements(By.CSS_SELECTOR, css_selector)
-                    for e in elems:
-                        # 进一步确认内部有文字"关闭"
-                        try:
-                            span = e.find_element(By.XPATH, ".//span")
-                            if "关闭" in (span.text or "") and e.is_displayed():
-                                close_btn = e
-                                break
-                        except Exception:
-                            continue
-                except Exception:
-                    close_btn = None
-
-            if not close_btn:
-                logger.warning("未找到关闭按钮")
-                return False
-
-            # 滚动到按钮并点击
-            try:
-                self.browser.driver.execute_script("arguments[0].scrollIntoView(true);", close_btn)
-            except Exception:
-                pass
-            try:
-                close_btn.click()
-            except Exception:
-                try:
-                    self.browser.driver.execute_script("arguments[0].click();", close_btn)
-                except Exception as e:
-                    logger.error(f"点击关闭按钮失败: {e}", exc_info=True)
-                    return False
-            logger.info("已点击关闭按钮")
-            return True
-        except Exception as e:
-            logger.error(f"click_close_button 执行失败: {e}", exc_info=True)
-            return False
+    # 兼容旧调用方
+    def select_date(self, wanted: str) -> bool:
+        return self.focus_date(wanted, fresh=False)
