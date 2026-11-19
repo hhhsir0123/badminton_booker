@@ -8,8 +8,6 @@ user:
   # 登录手机号 / 学工号
   username: ""
   password: ""
-  # 接收通知的邮箱（留空则不发送）
-  email: ""
   # 平台里已经加过的同伴姓名，留空表示只订自己的
   partner_name: ""
 
@@ -58,13 +56,6 @@ polling:
   polling_date_offsets: [0, 1, 2]
   # 轮询发现空场后是否自动下单
   is_auto_booking: false
-
-email:
-  smtp_server: ""
-  smtp_port: 465
-  sender_email: ""
-  sender_password: ""
-  use_ssl: true
 
 # 飞书群机器人：群里「添加机器人 → 自定义机器人」拿到 webhook 填进来即可
 feishu:

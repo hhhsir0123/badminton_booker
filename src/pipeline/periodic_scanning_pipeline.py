@@ -46,72 +46,55 @@ class PeriodicScanningPipeline(BasePipeline):
 
     # ------------------------------------------------------------- 查询
 
-    def _query_available_courts(self) -> Dict[str, List[str]]:
-        merged: Dict[str, set] = {}
+    def _query_available_courts(self) -> Dict[str, Dict[str, List[str]]]:
+        """按日期返回可订场地：{date: {court: [slots]}}。
+
+        不能把不同日期合并成同一个 dict，否则「周六 19-20、周日 20-21」会被当成同一场地连续两小时。
+        """
+        by_date: Dict[str, Dict[str, List[str]]] = {}
         for day in self._dates():
             try:
                 data = self.query_manager.query_available_courts(day)
             except Exception as error:  # noqa: BLE001
                 self.logger.error("查询 %s 失败: %s", day, error)
                 continue
-            for court, slots in (data or {}).items():
-                merged.setdefault(court, set()).update(slots)
-        return {court: sorted(slots) for court, slots in merged.items()}
+            if not data:
+                continue
+            by_date[day] = {court: sorted(slots) for court, slots in data.items() if slots}
+        return by_date
 
     # ------------------------------------------------------------- 单轮
 
     def _perform_scan(self):
-        available = self._query_available_courts()
+        by_date = self._query_available_courts()
         self.summary["last_scan"] = datetime.now().isoformat(timespec="seconds")
-        if not available:
+        if not by_date:
             self.logger.info("本轮没有可用场地")
             return
 
-        self.logger.info("找到 %s 个有可订时段的场地", len(available))
         targets = self.polling_time_slots or []
-        valid = self._filter_valid_courts(available, targets) if targets else list(available.items())
-        if not valid:
-            self.logger.info("没有同时满足 %s 的场地", targets)
-            return
+        for day, available in by_date.items():
+            self.logger.info("%s 有 %s 个场地可订", day, len(available))
+            valid = self._filter_valid_courts(available, targets) if targets else list(available.items())
+            if not valid:
+                self.logger.info("%s 没有同时满足 %s 的场地", day, targets)
+                continue
 
-        booked: List[Tuple[str, List[str]]] = []
-        if self.is_auto_booking:
-            booked = self._process_bookings(
-                valid, targets, bool(self.partner_name), self.partner_name
-            )
-        self._send_notifications(booked, valid)
+            booked: List[Tuple[str, List[str]]] = []
+            if self.is_auto_booking:
+                # 下单是在页面上点格子，先把页面切到这一天
+                self.query_manager.focus_date(day, fresh=False)
+                booked = self._process_bookings(
+                    valid, targets, bool(self.partner_name), self.partner_name
+                )
+            self._send_notifications(day, booked, valid)
 
     # ------------------------------------------------------------- 通知
 
-    def _send_notifications(self, booked_courts, valid_courts):
-        self._send_feishu(booked_courts, valid_courts)
-        if not getattr(self, "email_notifier", None):
-            return
-        user_email = self.config.get("user.email")
-        if not user_email:
-            return
-        try:
-            if booked_courts:
-                for court, slots in booked_courts:
-                    self.email_notifier.send_booking_success(
-                        to_email=user_email,
-                        booking_info={
-                            "venue_type": self.venue_type,
-                            "date": self._dates()[0],
-                            "time_slot": ", ".join(slots),
-                            "court_name": court,
-                            "partners": [self.partner_name] if self.partner_name else [],
-                        },
-                    )
-            elif valid_courts:
-                self.email_notifier.send_availability_notification(
-                    to_email=user_email,
-                    available_courts={court: slots for court, slots in valid_courts},
-                )
-        except Exception as error:  # noqa: BLE001
-            self.logger.error("发送邮件失败: %s", error)
+    def _send_notifications(self, day, booked_courts, valid_courts):
+        self._send_feishu(day, booked_courts, valid_courts)
 
-    def _send_feishu(self, booked_courts, valid_courts):
+    def _send_feishu(self, day, booked_courts, valid_courts):
         notifier = getattr(self, "feishu_notifier", None)
         if not notifier or not notifier.enabled:
             return
@@ -120,13 +103,13 @@ class PeriodicScanningPipeline(BasePipeline):
                 return
             for court, slots in booked_courts:
                 notifier.send_booking_success(
-                    self._dates()[0], court, slots,
+                    day, court, slots,
                     [self.partner_name] if self.partner_name else [],
                 )
             return
         if valid_courts and self.config.get("feishu.notify_availability", True):
             notifier.send_availability(
-                self._dates()[0],
+                day,
                 {court: slots for court, slots in valid_courts},
             )
 

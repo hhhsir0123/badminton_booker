@@ -523,7 +523,8 @@ async function startRun(mode) {
     const result = await api('/api/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode })
+      // 把页面上刚校验过的配置一起提交，避免「看到的是新配置、跑的是旧配置」
+      body: JSON.stringify({ mode, yaml: IO.emit(state.config) })
     });
     feedback(result.message || '已启动', 'ok');
     refreshStatus();
@@ -543,9 +544,31 @@ async function stopRun() {
   }
 }
 
+async function shutdownProgram() {
+  if (location.protocol === 'file:') {
+    feedback('当前为静态页面，没有连接本地程序。', 'warn');
+    return;
+  }
+  if (!window.confirm('关闭程序会停止任务并关闭预约浏览器。若有待支付订单，请先完成付款。现在退出？')) return;
+  try {
+    await api('/api/shutdown', {
+      method: 'POST', headers: { 'X-Booker-Action': 'shutdown' }
+    });
+    apiReady = false;
+    document.querySelectorAll('button, input, select, textarea').forEach(el => { el.disabled = true; });
+    const message = '已请求退出，程序会在当前操作结束后关闭。请核对已经提交的订单。';
+    $('#grab-hint').textContent = message;
+    $('#poll-hint').textContent = message;
+    feedback(message, 'ok');
+  } catch (error) {
+    feedback(`关闭失败：${error.message}`, 'error');
+  }
+}
+
 // ------------------------------------------------------------------ 事件
 
 function bind() {
+  $('#shutdown').addEventListener('click', shutdownProgram);
   $('#config').addEventListener('input', (event) => {
     if (event.target.id === 'username' || event.target.id === 'password') {
       verifiedKey = '';

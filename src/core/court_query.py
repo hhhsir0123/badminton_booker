@@ -277,17 +277,16 @@ class QueryManager:
     def _turn(self, page: Dict[str, Any], direction: str) -> Optional[Dict[str, Any]]:
         """翻一页。direction 是 'prev' / 'next'。"""
         script = """
-        const done = arguments[arguments.length - 1];
         const [direction] = arguments;
         const visible = e => e && e.getClientRects().length;
         const table = [...document.querySelectorAll('.reserveTable .spaceTable table')].filter(visible)[0];
-        if (!table || !table.tHead) { done(false); return; }
+        if (!table || !table.tHead) { return false; }
         const head = table.tHead.rows[0];
         const arrow = [...head.querySelectorAll('.ivu-icon-ios-arrow-' + (direction === 'prev' ? 'back' : 'forward'))]
             .filter(visible)[0];
-        if (!arrow) { done(false); return; }
+        if (!arrow) { return false; }
         arrow.click();
-        done(true);
+        return true;
         """
         if not self._js(script, direction):
             return None
