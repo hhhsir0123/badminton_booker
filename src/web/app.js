@@ -4,7 +4,6 @@
 
 const IO = window.ConfigIO;
 const DRAFT_KEY = 'bb.config.draft';
-const FILE_NAME = 'config.yaml';
 
 // 场地是固定的：学院路校区羽毛球馆一共 10 片
 const COURTS = [
@@ -17,7 +16,6 @@ const COURTS = [
 const state = {
   config: null,
   dirty: false,
-  sourceName: ''
 };
 
 const $ = (selector, root) => (root || document).querySelector(selector);
@@ -31,15 +29,8 @@ function feedback(text, kind) {
   node.className = `feedback${kind ? ' ' + kind : ''}`;
 }
 
-function setStatus(text, kind) {
-  const node = $('#status');
-  node.textContent = text;
-  node.dataset.state = kind || '';
-}
-
 function markDirty() {
   state.dirty = true;
-  setStatus('有未保存修改', 'dirty');
   saveDraftSoon();
 }
 
@@ -148,7 +139,6 @@ function render() {
   renderPreferences(booking.preferences);
   toggleProvider();
   refreshNeeds();
-  $('#file-name').textContent = state.sourceName ? `当前来源：${state.sourceName}` : '';
   updatePreview();
 }
 
@@ -242,7 +232,7 @@ function saveDraftSoon() {
   clearTimeout(draftTimer);
   draftTimer = setTimeout(() => {
     try {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify({ config: state.config, sourceName: state.sourceName }));
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({ config: state.config }));
     } catch (error) {
       /* 隐私模式下 localStorage 可能不可用，忽略即可 */
     }
@@ -286,61 +276,6 @@ function validateOrReport() {
   }
   feedback('');
   return true;
-}
-
-// ------------------------------------------------------------------ 导入 / 导出
-
-function importFile(file) {
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const parsed = IO.parse(String(reader.result));
-      state.config = IO.normalize(parsed);
-      state.sourceName = file.name;
-      state.dirty = false;
-      render();
-      setStatus('已载入', 'ok');
-      feedback(`已载入 ${file.name}，共 ${state.config.booking.preferences.length} 条候选`, 'ok');
-    } catch (error) {
-      feedback(`解析失败：${error.message}`, 'error');
-      setStatus('解析失败', 'error');
-    }
-  };
-  reader.onerror = () => feedback('读取文件失败', 'error');
-  reader.readAsText(file, 'utf-8');
-}
-
-function yamlText() {
-  return IO.emit(state.config);
-}
-
-function download(text) {
-  const blob = new Blob([text], { type: 'text/yaml;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = FILE_NAME;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
-}
-
-async function copyText(text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch (error) {
-    const area = document.createElement('textarea');
-    area.value = text;
-    area.style.position = 'fixed';
-    area.style.opacity = '0';
-    document.body.appendChild(area);
-    area.select();
-    const ok = document.execCommand('copy');
-    area.remove();
-    return ok;
-  }
 }
 
 // ------------------------------------------------------------------ 本地控制台 API
@@ -395,9 +330,7 @@ async function detectApi() {
       const data = await api('/api/config');
       if (data.yaml) {
         state.config = IO.normalize(IO.parse(data.yaml));
-        state.sourceName = 'config.yaml';
         render();
-        setStatus('已载入', 'ok');
       }
     } catch (error) {
       /* 读不到就沿用默认值，不阻塞启停 */
@@ -423,7 +356,6 @@ async function saveToProgram() {
       body: JSON.stringify({ yaml: IO.emit(state.config) })
     });
     state.dirty = false;
-    setStatus('已保存', 'ok');
     feedback('已写入 config.yaml', 'ok');
   } catch (error) {
     feedback(`保存失败：${error.message}`, 'error');
@@ -495,37 +427,6 @@ function bind() {
   $('#stop').addEventListener('click', stopRun);
   $('#save').addEventListener('click', saveToProgram);
 
-  $('#import').addEventListener('click', () => $('#file').click());
-  $('#file').addEventListener('change', (event) => {
-    const file = event.target.files && event.target.files[0];
-    if (file) importFile(file);
-    event.target.value = '';
-  });
-
-  $('#export').addEventListener('click', () => {
-    if (!validateOrReport()) return;
-    download(yamlText());
-    state.dirty = false;
-    setStatus('已导出', 'ok');
-    feedback(`已生成 ${FILE_NAME}，请覆盖项目根目录里的同名文件`, 'ok');
-  });
-
-  $('#copy').addEventListener('click', async () => {
-    if (!validateOrReport()) return;
-    const ok = await copyText(yamlText());
-    feedback(ok ? '配置内容已复制到剪贴板' : '复制失败，请手动选择预览区内容', ok ? 'ok' : 'error');
-  });
-
-  $('#reset').addEventListener('click', () => {
-    if (!window.confirm('恢复默认配置？当前修改会丢失。')) return;
-    state.config = IO.defaults();
-    state.sourceName = '';
-    state.dirty = true;
-    render();
-    setStatus('默认配置', 'dirty');
-    feedback('已恢复默认值', 'ok');
-  });
-
   window.addEventListener('beforeunload', (event) => {
     if (!state.dirty) return undefined;
     event.preventDefault();
@@ -533,24 +434,16 @@ function bind() {
     return '';
   });
 
-  document.addEventListener('keydown', (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
-      event.preventDefault();
-      $('#export').click();
-    }
-  });
 }
 
 function boot() {
   const draft = loadDraft();
   state.config = draft ? IO.normalize(draft.config) : IO.defaults();
-  state.sourceName = draft ? draft.sourceName || '' : '';
   bind();
   render();
   detectApi();
   if (draft) {
-    setStatus('草稿已恢复', 'dirty');
-    feedback('已恢复上次未导出的编辑内容', '');
+    feedback('已恢复上次未保存的编辑内容', '');
   }
 }
 
