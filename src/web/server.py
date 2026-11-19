@@ -170,7 +170,85 @@ class Runner:
             self.thread = None
 
 
-def _handler_factory(runner: Runner):
+
+
+class LoginChecker:
+    """真实登录一次来验证账号密码。
+
+    - 填了密码：用临时 profile 走完整登录（含验证码 OCR），验证完删除临时目录；
+    - 没填密码：用已保存的 profile 打开页面，看是否还是登录态。
+    """
+
+    def __init__(self, config_path: str, project_root: str):
+        self.config_path = config_path
+        self.project_root = project_root
+        self._lock = threading.Lock()
+
+    def check(self, username: str, password: str) -> dict:
+        if not username:
+            return {"ok": False, "message": "请先填写登录手机号"}
+        if not self._lock.acquire(blocking=False):
+            return {"ok": False, "message": "上一次验证还在进行中，请稍等"}
+        started = time.monotonic()
+        profile = ""
+        temporary = False
+        try:
+            from ..core.browser import BrowserManager
+            from ..core.login import LoginManager
+            from ..utils.captcha_solver import CaptchaSolver
+            from ..utils.ocr import CaptchaRecognizer
+
+            config = Config(self.config_path)
+            url = str(config.get("login.url") or "https://ggtypt.cumtb.edu.cn/venue/login")
+
+            if password:
+                import uuid
+
+                profile = os.path.join(self.project_root, "logs", f".login-check-{uuid.uuid4().hex[:8]}")
+                temporary = True
+            else:
+                profile = str(config.get("login.profile_dir") or ".chrome-profile")
+                if not os.path.isabs(profile):
+                    profile = os.path.join(self.project_root, profile)
+
+            browser = BrowserManager(headless=True, profile_dir=profile, project_root=self.project_root)
+            driver = browser.start()
+            try:
+                if not password:
+                    driver.get(url)
+                    time.sleep(1.5)
+                    if driver.find_elements("css selector", "input[type='password']"):
+                        return {"ok": False, "message": "保存的登录状态已失效，请填写密码后重试"}
+                    return {"ok": True, "message": "已用保存的登录状态验证通过"}
+
+                recognizer = CaptchaRecognizer()
+                solver = CaptchaSolver(browser, recognizer, max_attempts=3)
+                login = LoginManager(browser, recognizer, solver)
+                ok = login.ensure_logged_in(
+                    url=url, username=username, password=password, auto_captcha=True, max_retry=2
+                )
+                elapsed = int((time.monotonic() - started) * 1000)
+                if ok and "login" not in driver.current_url:
+                    return {"ok": True, "message": f"登录成功（{elapsed}ms）"}
+                if ok:
+                    return {"ok": True, "message": f"登录成功（{elapsed}ms）"}
+                return {"ok": False, "message": "登录失败：账号或密码错误，或验证码未通过"}
+            finally:
+                try:
+                    driver.quit()
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception as error:  # noqa: BLE001
+            logger.warning("登录验证异常: %s", error, exc_info=True)
+            return {"ok": False, "message": f"登录验证异常：{error}"}
+        finally:
+            if temporary and profile:
+                import shutil
+
+                shutil.rmtree(profile, ignore_errors=True)
+            self._lock.release()
+
+def _handler_factory(runner: Runner, checker):
     class Handler(BaseHTTPRequestHandler):
         server_version = "BadmintonBooker/1.0"
 
@@ -251,6 +329,14 @@ def _handler_factory(runner: Runner):
                     return
                 self._json(200, {"ok": True})
                 return
+            if path == "/api/login-check":
+                payload = self._body()
+                result = checker.check(
+                    str(payload.get("username") or "").strip(),
+                    str(payload.get("password") or ""),
+                )
+                self._json(200 if result.get("ok") else 400, result)
+                return
             if path == "/api/start":
                 mode = str(self._body().get("mode") or "grab")
                 ok, message = runner.start(mode)
@@ -267,7 +353,9 @@ def _handler_factory(runner: Runner):
 
 def serve(config_path: str, host: str = "127.0.0.1", port: int = 8765, open_browser: bool = True):
     runner = Runner(config_path)
-    httpd = ThreadingHTTPServer((host, port), _handler_factory(runner))
+    project_root = os.path.dirname(os.path.dirname(WEB_DIR))
+    checker = LoginChecker(config_path, project_root)
+    httpd = ThreadingHTTPServer((host, port), _handler_factory(runner, checker))
     url = f"http://{host}:{port}/"
     logger.info("配置控制台已启动：%s", url)
     if open_browser:

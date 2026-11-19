@@ -48,6 +48,12 @@
         </label>
       </div>
 
+      <div class="login-check">
+        <button id="test-login" class="secondary" type="button">测试登录</button>
+        <output id="login-state" class="state">未验证</output>
+        <span class="hint">用这套账号密码真实登录一次，确认能登上</span>
+      </div>
+
       <div class="section-head">
         <div><h2>开售与节奏</h2><p>平台每天什么时候放场、提前多久准备。</p></div>
       </div>
@@ -104,6 +110,7 @@
         <label>指定入场日期<input id="date" type="date"><small>留空则按开售日 + 提前天数推算</small></label>
       </div>
       <div id="preferences"></div>
+      <p class="hint" id="pref-summary"></p>
       <template id="pref-template">
         <div class="pref-row">
           <span class="rank" aria-hidden="true"></span>

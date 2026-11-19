@@ -290,18 +290,37 @@ input[type="checkbox"] {
   color: var(--accent);
 }
 
-@media (max-width: 640px) {
+@media (max-width: 760px) {
+  /* 窄屏下候选行改为自动换行：序号 + 场地一行，开始/结束各占一半，操作按钮靠右 */
   .pref-row {
-    grid-template-columns: 24px 1fr 1fr;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 8px;
+  }
+
+  .pref-row .rank {
+    flex: 0 0 22px;
+    align-self: center;
   }
 
   .pref-row .court-field {
-    grid-column: 2 / 4;
+    flex: 1 1 calc(100% - 32px);
   }
 
-  .row-actions {
-    grid-column: 1 / 4;
-    justify-content: flex-end;
+  .pref-row label {
+    flex: 1 1 calc(50% - 16px);
+    min-width: 130px;
+  }
+
+  .pref-row input[type="time"] {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .pref-row .row-actions {
+    flex: 0 0 auto;
+    margin-left: auto;
   }
 }
 

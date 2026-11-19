@@ -94,6 +94,7 @@ function addRow(item) {
     }
     renumber();
     applyForm();
+    refreshPrefSummary();
     markDirty();
   });
   $('#preferences').appendChild(row);
@@ -137,6 +138,7 @@ function render() {
   $('#secret').value = config.feishu.secret || '';
   $('#mention-all').checked = Boolean(config.feishu.mention_all);
   renderPreferences(booking.preferences);
+  refreshPrefSummary();
   toggleProvider();
   refreshNeeds();
 }
@@ -225,6 +227,59 @@ function applyForm() {
   config.feishu.webhook = $('#webhook').value.trim();
   config.feishu.secret = $('#secret').value.trim();
   config.feishu.mention_all = $('#mention-all').checked;
+}
+
+
+// ------------------------------------------------------------------ 登录校验
+
+let verifiedKey = '';
+
+function credentialKey() {
+  return `${$('#username').value.trim()}|${$('#password').value}`;
+}
+
+async function checkLogin(silent) {
+  if (!apiReady) {
+    feedback('页面没连上本地控制台，无法测试登录', 'warn');
+    return false;
+  }
+  const username = $('#username').value.trim();
+  const password = $('#password').value;
+  if (!username) {
+    markField('#username', '请填写登录手机号');
+    feedback('请先填写登录手机号', 'error');
+    return false;
+  }
+  const state = $('#login-state');
+  state.textContent = '验证中…';
+  state.dataset.state = 'dirty';
+  if (!silent) feedback('正在用这套账号登录一次，请稍候…', '');
+  try {
+    const result = await api('/api/login-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    state.textContent = '已验证';
+    state.dataset.state = 'ok';
+    verifiedKey = credentialKey();
+    feedback(result.message || '登录验证通过', 'ok');
+    return true;
+  } catch (error) {
+    state.textContent = '验证失败';
+    state.dataset.state = 'error';
+    feedback(`登录验证失败：${error.message}`, 'error');
+    return false;
+  }
+}
+
+function refreshPrefSummary() {
+  const node = $('#pref-summary');
+  if (!node) return;
+  const count = $$('.pref-row').length;
+  const attempts = Number($('#attempts').value) || 0;
+  const tried = Math.min(count, attempts);
+  node.textContent = `已配置 ${count} 条候选，最多提交 ${attempts} 次（只会尝试前 ${tried} 条）；候选条数不限。`;
 }
 
 // ------------------------------------------------------------------ 草稿
@@ -410,6 +465,10 @@ async function saveToProgram() {
     return;
   }
   if (collectSystemErrors().length) return;
+  if (credentialKey() !== verifiedKey) {
+    const ok = await checkLogin(true);
+    if (!ok) return;
+  }
   if (!validateOrReport()) return;
   try {
     await api('/api/config', {
@@ -460,6 +519,15 @@ async function stopRun() {
 
 function bind() {
   $('#config').addEventListener('input', (event) => {
+    if (event.target.id === 'username' || event.target.id === 'password') {
+      verifiedKey = '';
+      const state = $('#login-state');
+      if (state) {
+        state.textContent = '未验证';
+        state.dataset.state = '';
+      }
+    }
+    refreshPrefSummary();
     const label = event.target.closest('label');
     if (label && label.classList.contains('invalid')) {
       label.classList.remove('invalid');
@@ -493,6 +561,7 @@ function bind() {
   $('#poll-start').addEventListener('click', () => startRun('poll'));
   $('#poll-stop').addEventListener('click', stopRun);
   $('#save').addEventListener('click', saveToProgram);
+  $('#test-login').addEventListener('click', () => checkLogin(false));
 
   window.addEventListener('beforeunload', (event) => {
     if (!state.dirty) return undefined;
