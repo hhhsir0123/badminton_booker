@@ -259,8 +259,13 @@ def validate_for_run(data: Dict[str, Any]) -> List[str]:
     elif not PHONE_RE.match(username):
         errors.append("登录手机号应为 11 位手机号")
 
+    if not str(_get(data, "user.password", "") or ""):
+        errors.append("请填写登录密码（系统设置 → 账号）")
+
     partner = str(_get(data, "user.partner_name", "") or "").strip()
-    if partner and not NAME_RE.match(partner):
+    if not partner:
+        errors.append("请填写默认同伴（系统设置 → 账号）")
+    elif not NAME_RE.match(partner):
         errors.append("默认同伴姓名不合法（2~20 个中文/字母）")
 
     provider = str(_get(data, "captcha.provider", "local") or "local").lower()

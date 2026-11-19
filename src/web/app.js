@@ -180,6 +180,8 @@ function switchTab(name) {
 function refreshNeeds() {
   const targets = [
     ['username', '#username'],
+    ['password', '#password'],
+    ['partner', '#partner'],
     ['tts-user', '#tts-user'],
     ['tts-pass', '#tts-pass']
   ];
@@ -364,8 +366,15 @@ function collectSystemErrors() {
     fail('#username', '手机号应为 11 位数字');
   }
 
+  const password = $('#password').value;
+  if (!password) {
+    fail('#password', '请填写登录密码');
+  }
+
   const partner = $('#partner').value.trim();
-  if (partner && !NAME_RE.test(partner)) {
+  if (!partner) {
+    fail('#partner', '请填写默认同伴');
+  } else if (!NAME_RE.test(partner)) {
     fail('#partner', '同伴姓名不合法（2~20 个中文/字母）');
   }
 

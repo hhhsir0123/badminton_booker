@@ -38,13 +38,13 @@
           <input id="username" type="tel" autocomplete="off" placeholder="必填">
           <small>平台登录用的手机号</small>
         </label>
-        <label>登录密码
-          <input id="password" type="password" autocomplete="off" placeholder="一般留空，用已保存的登录状态">
-          <small>只有换设备/登录失效时才需要填</small>
+        <label class="need" data-need="password">登录密码
+          <input id="password" type="password" autocomplete="off" placeholder="必填">
+          <small>平台登录密码</small>
         </label>
-        <label>默认同伴
-          <input id="partner" type="text" autocomplete="off" placeholder="选填">
-          <small>平台里已加过的同伴，留空表示不指定</small>
+        <label class="need" data-need="partner">默认同伴
+          <input id="partner" type="text" autocomplete="off" placeholder="必填">
+          <small>平台里已加过的同伴姓名</small>
         </label>
       </div>
 

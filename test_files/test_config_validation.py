@@ -12,6 +12,8 @@ from src.config import DEFAULTS, validate_for_run
 def base():
     data = copy.deepcopy(DEFAULTS)
     data["user"]["username"] = "13800138000"
+    data["user"]["password"] = "secret"
+    data["user"]["partner_name"] = "张三"
     data["captcha"]["provider"] = "local"
     return data
 
@@ -29,6 +31,16 @@ class ValidateForRunTest(unittest.TestCase):
         data = base()
         data["user"]["username"] = "12345"
         self.assertTrue(any("11 位" in item for item in validate_for_run(data)))
+
+    def test_missing_password(self):
+        data = base()
+        data["user"]["password"] = ""
+        self.assertTrue(any("登录密码" in item for item in validate_for_run(data)))
+
+    def test_missing_partner(self):
+        data = base()
+        data["user"]["partner_name"] = ""
+        self.assertTrue(any("默认同伴" in item for item in validate_for_run(data)))
 
     def test_bad_partner(self):
         data = base()
