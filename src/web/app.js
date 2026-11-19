@@ -139,7 +139,6 @@ function render() {
   renderPreferences(booking.preferences);
   toggleProvider();
   refreshNeeds();
-  updatePreview();
 }
 
 function switchTab(name) {
@@ -250,22 +249,7 @@ function loadDraft() {
   }
 }
 
-// ------------------------------------------------------------------ 预览 / 校验
-
-let previewTimer = null;
-function updatePreview() {
-  const node = $('#preview');
-  try {
-    node.textContent = IO.emit(state.config);
-  } catch (error) {
-    node.textContent = `生成失败：${error.message}`;
-  }
-}
-
-function schedulePreview() {
-  clearTimeout(previewTimer);
-  previewTimer = setTimeout(updatePreview, 200);
-}
+// ------------------------------------------------------------------ 校验
 
 function validateOrReport() {
   applyForm();
@@ -400,7 +384,6 @@ function bind() {
     applyForm();
     refreshNeeds();
     markDirty();
-    schedulePreview();
   });
 
   $$('.tab').forEach((button) => {
@@ -411,7 +394,6 @@ function bind() {
     addRow({ court: '任意', start: '19:00', end: '21:00' });
     applyForm();
     markDirty();
-    schedulePreview();
   });
 
   $('#provider').addEventListener('change', () => {
@@ -419,7 +401,6 @@ function bind() {
     applyForm();
     refreshNeeds();
     markDirty();
-    schedulePreview();
   });
 
   $('#start').addEventListener('click', () => startRun('grab'));

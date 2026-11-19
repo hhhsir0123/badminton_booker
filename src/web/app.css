@@ -116,11 +116,11 @@ hr {
 
 /* ------------------------------------------------------------ 布局 */
 main {
-  max-width: 1180px;
+  max-width: 900px;
   margin: 0 auto;
   padding: 24px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 380px;
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
   align-items: start;
 }
