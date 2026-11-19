@@ -22,6 +22,98 @@ python main.py --web
 
 配置页面在 `src/web/index.html`，直接双击也能打开（`file://` 即可，无需服务器）。
 
+## 跨平台（Windows / macOS / Linux）
+
+核心逻辑（配置、签名、API、流水线、图鉴）是纯 Python，三个平台通用；和系统相关的一共三处，
+代码里都已经按平台处理：
+
+| 模块 | Windows | macOS | Linux |
+| --- | --- | --- | --- |
+| 配置 / 签名 / API / 流水线 | ✅ | ✅ | ✅ |
+| Selenium + Chrome | ✅ 已验证 | ✅ 需装驱动 | ✅ 需装驱动 |
+| chromedriver 查找 | ✅ `drivers/**/chromedriver.exe` | ✅ `drivers/**/chromedriver` | ✅ 同 macOS |
+| 本地 OCR（ddddocr / rapidocr） | ✅ 已验证 | ⚠️ 需实测 onnxruntime | ⚠️ 需实测 |
+| 字体模板兜底 | ✅ 微软雅黑等 | ✅ PingFang / STHeiti（没有就自动降级） | ✅ Noto / 文泉驿 |
+| 图鉴打码 | ✅ 已验证 | ✅ | ✅ |
+| 配置页（静态 HTML） | ✅ | ✅ | ✅ |
+| 定时任务 | 任务计划程序 | launchd / cron | cron |
+
+`BrowserManager` 会按当前平台在 `drivers/` 下递归找 chromedriver（找不到才交给 Selenium Manager）；
+`ClickWordSolver` 会按平台挑中文字体，没有匹配字体时模板兜底自动降级，不会报错。
+
+### macOS 上要做的 5 件事
+
+```bash
+# 1. 装 Chrome
+brew install --cask google-chrome
+
+# 2. 装 Python 依赖（Apple Silicon 会自动装 onnxruntime 的 arm64 wheel）
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+# 3. 装 chromedriver（版本要和 Chrome 一致）
+brew install --cask chromedriver
+xattr -d com.apple.quarantine "$(which chromedriver)"   # 绕过 Gatekeeper 拦截
+
+# 4. 验证（这一步不需要登录，先确认 Selenium 链路通）
+python main.py --check
+python test_files/e2e_local.py
+
+# 5. 定时任务改用 launchd（见下）
+```
+
+如果 `ddddocr` 导入报错，先单独装 onnxruntime：
+
+```bash
+pip install onnxruntime
+python -c "import ddddocr; print('ocr ok')"
+```
+
+### macOS 定时任务（launchd）
+
+`~/Library/LaunchAgents/com.badminton.booker.plist`：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.badminton.booker</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/你的用户名/badminton_booker/.venv/bin/python</string>
+    <string>/Users/你的用户名/badminton_booker/main.py</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/你的用户名/badminton_booker</string>
+  <key>StartCalendarInterval</key>
+  <dict><key>Hour</key><integer>6</integer><key>Minute</key><integer>58</integer></dict>
+  <key>StandardOutPath</key><string>/tmp/booker.out.log</string>
+  <key>StandardErrorPath</key><string>/tmp/booker.err.log</string>
+</dict>
+</plist>
+```
+
+```bash
+launchctl load ~/Library/LaunchAgents/com.badminton.booker.plist
+```
+
+macOS 的 cron/launchd 在电脑休眠时不会执行，抢票当天要保证机器是唤醒状态
+（`caffeinate -i python main.py` 可以阻止休眠）。
+
+### Linux 简述
+
+```bash
+sudo apt install -y google-chrome-stable chromium-driver
+pip install -r requirements.txt
+crontab -e     # 58 6 * * * cd /path/to/project && .venv/bin/python main.py
+```
+
+### 还有两点要注意
+
+- **Chrome 自动升级会让 chromedriver 版本不匹配**，报 `This version of ChromeDriver only supports Chrome version X`。
+  重新下载对应版本放到 `drivers/` 即可（`drivers/` 已在 `.gitignore` 里，不会进仓库）；
+- **图鉴打码在国内访问**。如果机器在海外，需要给 HTTP 请求走代理（程序用系统代理）。
+
 ## 配置页面
 
 浏览器不能悄悄改磁盘上的文件，所以页面是「载入 → 编辑 → 导出」：
