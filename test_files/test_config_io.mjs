@@ -127,6 +127,13 @@ check('校验：时段顺序', () => {
   assert.ok(IO.validate(config).some((item) => item.includes('晚于')));
 });
 
+
+check('校验：只支持整点', () => {
+  const config = IO.defaults();
+  config.booking.preferences = [{ court: '任意', start: '19:30', end: '21:00' }];
+  assert.ok(IO.validate(config).some((item) => item.includes('整点')));
+});
+
 check('校验：没有候选', () => {
   const config = IO.defaults();
   config.booking.preferences = [];

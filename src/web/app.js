@@ -13,6 +13,9 @@ const COURTS = [
   '训练馆7号', '训练馆8号', '训练馆9号', '训练馆10号'
 ];
 
+// 平台按整点放场：候选时段只允许整点
+const HOURS = Array.from({ length: 15 }, (_, index) => `${String(index + 8).padStart(2, '0')}:00`);
+
 const state = {
   config: null,
   dirty: false,
@@ -72,12 +75,28 @@ function fillCourtOptions(select, value) {
   select.value = value && options.indexOf(value) >= 0 ? value : options[0];
 }
 
+function fillHourOptions(select, value) {
+  const options = HOURS.slice();
+  // 旧配置里可能有非整点，保留下来，导出时提示用户改
+  if (value && options.indexOf(value) < 0) {
+    options.push(value);
+  }
+  select.textContent = '';
+  options.forEach((hour) => {
+    const option = document.createElement('option');
+    option.value = hour;
+    option.textContent = hour;
+    select.appendChild(option);
+  });
+  select.value = value && options.indexOf(value) >= 0 ? value : options[0];
+}
+
 function addRow(item) {
   const row = $('#pref-template').content.firstElementChild.cloneNode(true);
   const courtSelect = row.querySelector('select[name="court"]');
   fillCourtOptions(courtSelect, item && item.court ? item.court : '任意');
-  row.querySelector('input[name="start"]').value = item && item.start ? item.start : '19:00';
-  row.querySelector('input[name="end"]').value = item && item.end ? item.end : '21:00';
+  fillHourOptions(row.querySelector('select[name="start"]'), item && item.start ? item.start : '19:00');
+  fillHourOptions(row.querySelector('select[name="end"]'), item && item.end ? item.end : '21:00');
   row.addEventListener('click', (event) => {
     const action = event.target.dataset ? event.target.dataset.act : null;
     if (!action) return;
@@ -200,8 +219,8 @@ function applyForm() {
   config.booking.fallback_any = $('#fallback').checked;
   config.booking.preferences = $$('.pref-row').map((row) => ({
     court: row.querySelector('select[name="court"]').value,
-    start: row.querySelector('input[name="start"]').value,
-    end: row.querySelector('input[name="end"]').value
+    start: row.querySelector('select[name="start"]').value,
+    end: row.querySelector('select[name="end"]').value
   }));
   config.polling.polling_interval = numberValue('#interval');
   config.polling.polling_date_offsets = parseDays($('#days').value);

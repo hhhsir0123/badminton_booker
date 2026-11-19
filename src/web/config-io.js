@@ -527,6 +527,12 @@
       if (!CLOCK.test(String(item.end || ''))) {
         errors.push(label + '的结束时间需要 HH:MM');
       }
+      if (CLOCK.test(String(item.start || '')) && !/:00$/.test(String(item.start))) {
+        errors.push(label + '的开始时间只支持整点（HH:00）');
+      }
+      if (CLOCK.test(String(item.end || '')) && !/:00$/.test(String(item.end))) {
+        errors.push(label + '的结束时间只支持整点（HH:00）');
+      }
       if (CLOCK.test(String(item.start || '')) && CLOCK.test(String(item.end || '')) && item.start >= item.end) {
         errors.push(label + '的结束时间要晚于开始时间');
       }

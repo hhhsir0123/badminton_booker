@@ -201,6 +201,10 @@ def validate_config(data: Dict[str, Any]) -> List[str]:
                 errors.append(f"第 {index} 条偏好的开始时间需要 HH:MM")
             if not isinstance(end, str) or not TIME_CLOCK.match(end):
                 errors.append(f"第 {index} 条偏好的结束时间需要 HH:MM")
+            if isinstance(start, str) and TIME_CLOCK.match(start) and not start.endswith(":00"):
+                errors.append(f"第 {index} 条偏好的开始时间只支持整点（HH:00）")
+            if isinstance(end, str) and TIME_CLOCK.match(end) and not end.endswith(":00"):
+                errors.append(f"第 {index} 条偏好的结束时间只支持整点（HH:00）")
             if isinstance(start, str) and isinstance(end, str) and TIME_CLOCK.match(start) and TIME_CLOCK.match(end):
                 if start >= end:
                     errors.append(f"第 {index} 条偏好的结束时间要晚于开始时间")
