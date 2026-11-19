@@ -3,6 +3,7 @@ import os
 import sys
 import threading
 import unittest
+from datetime import date, timedelta
 from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -67,8 +68,11 @@ class QueryTest(unittest.TestCase):
         ]
         pipeline = make_pipeline(polling_date_offsets=[0, 1], query_manager=query)
         result = pipeline._query_available_courts()
-        self.assertEqual(result["训练馆3号"], ["19:00-20:00", "20:00-21:00"])
-        self.assertEqual(result["训练馆4号"], ["19:00-20:00"])
+        today = date.today().isoformat()
+        tomorrow = (date.today() + timedelta(days=1)).isoformat()
+        # 不同日期必须分开，不能合并成「同一场地连续两小时」
+        self.assertEqual(result[today], {"训练馆3号": ["19:00-20:00"]})
+        self.assertEqual(result[tomorrow], {"训练馆3号": ["20:00-21:00"], "训练馆4号": ["19:00-20:00"]})
         self.assertEqual(query.query_available_courts.call_count, 2)
 
     def test_tolerates_failure(self):

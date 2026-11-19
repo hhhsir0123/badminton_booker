@@ -523,7 +523,8 @@ async function startRun(mode) {
     const result = await api('/api/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ mode })
+      // 把页面上刚校验过的配置一起提交，避免「看到的是新配置、跑的是旧配置」
+      body: JSON.stringify({ mode, yaml: IO.emit(state.config) })
     });
     feedback(result.message || '已启动', 'ok');
     refreshStatus();

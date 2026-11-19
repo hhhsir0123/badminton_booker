@@ -249,11 +249,12 @@ HELPERS = r"""
       }
       var current = bb.toasts().join('|');
       var fresh = current && current !== baseline ? current : '';
-      if (/成功|已生成|待支付|去支付|订单号|下单/.test(fresh)) {
-        return { ok: true, reason: 'toast', message: fresh };
-      }
+      // 先判失败：「下单失败」也含「下单」，不能先被成功规则吃掉
       if (/失败|已被|已售|库存不足|不可预约|频繁|超时|已过期|请勿重复/.test(fresh)) {
         return { ok: false, reason: 'toast', message: fresh };
+      }
+      if (/成功|已生成|待支付|去支付|订单号/.test(fresh)) {
+        return { ok: true, reason: 'toast', message: fresh };
       }
       await bb.sleep(40);
     }

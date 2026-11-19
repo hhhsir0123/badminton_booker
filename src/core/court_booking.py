@@ -19,7 +19,14 @@ from ..utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 FAILURE_HINTS = ("失败", "已被", "已售", "库存不足", "不可预约", "频繁", "超时", "已过期", "请勿重复", "无库存")
-SUCCESS_HINTS = ("成功", "已生成", "待支付", "去支付", "订单号", "下单")
+# 注意：不能包含「下单」——"下单失败" 也含这两个字
+SUCCESS_HINTS = ("成功", "已生成", "待支付", "去支付", "订单号")
+
+
+SELECTED_TEXT_JS = """
+const box = document.querySelector('.submit_order_box');
+return box ? (box.innerText || '') : '';
+"""
 
 
 class BookingManager:
@@ -52,6 +59,9 @@ class BookingManager:
             logger.warning("场地 %s 不在当前页且翻页未找到", court)
             return {"status": "unavailable", "detail": "court-not-found"}
 
+        # 换候选前先清空上一次的选择，避免残留场次被一起提交
+        self.clear_selection()
+
         targets = [{"court": court, "slot": slot} for slot in slots]
         payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets) or {}
         if not payload.get("ok") and payload.get("error") == "no-helpers":
@@ -59,6 +69,9 @@ class BookingManager:
             payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets) or {}
 
         results = payload.get("results") or []
+        if not results:
+            logger.warning("选场没有返回任何结果，按不可用处理")
+            return {"status": "unavailable", "detail": "empty-result"}
         selected, failed = [], []
         for item in results:
             if item.get("ok") and (item.get("changed") or "selected" in (item.get("classes") or [])):
@@ -83,7 +96,44 @@ class BookingManager:
         if failed:
             logger.warning("部分场格没有选中: %s", [item.get("slot") for item in failed])
             return {"status": "partial", "detail": selected, "failed": failed}
+
+        # 页面上的「已选」清单必须和本次候选完全对得上，否则不提交
+        if not self._selected_matches(court, slots):
+            logger.warning("页面「已选」与候选不一致（%s %s），不提交", court, slots)
+            return {"status": "mismatch", "detail": "selected-list-mismatch"}
         return {"status": "selected", "detail": selected}
+
+    def clear_selection(self) -> bool:
+        """点掉底部的「取消」，清空已选场次。"""
+        try:
+            from selenium.webdriver.common.by import By
+
+            button = self.driver.find_element(
+                By.CSS_SELECTOR, ".submit_order_box .action .btn.cancel"
+            )
+            self.driver.execute_script("arguments[0].click();", button)
+            time.sleep(0.2)
+            return True
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _selected_matches(self, court: str, slots: List[str]) -> bool:
+        """读页面底部的「已选」文案核对；页面没写明细时不做判断，退回场格 class。
+
+        只有页面明确写了「场地/时段」时才核对，避免因为拿不到文案而误伤正常下单。
+        """
+        try:
+            text = str(self.driver.execute_script(SELECTED_TEXT_JS) or "").strip()
+        except Exception:  # noqa: BLE001
+            return True
+        if not text:
+            return True
+        has_court = bool(court) and court in text
+        has_slot = any(slot in text for slot in slots)
+        if not has_court and not has_slot:
+            # 文案里没有任何明细，无法核对，交给场格 class
+            return True
+        return has_court and has_slot
 
     def _submit_ready(self) -> bool:
         try:
@@ -140,6 +190,14 @@ class BookingManager:
         reason = payload.get("reason")
         message = str(payload.get("message") or "")
 
+        if reason == "navigated":
+            # 只有跳到订单/支付页才算成功；跳登录页（会话过期）必须判为未知
+            url = str(payload.get("url") or self.driver.current_url or "").lower()
+            if any(token in url for token in ("order", "pay", "success")):
+                return BookingOutcome.CREATED
+            logger.warning("页面跳转到 %s，不是订单页，结果未知", url)
+            return BookingOutcome.UNKNOWN
+
         if payload.get("ok"):
             logger.info("平台回执: %s %s", reason, message)
             return BookingOutcome.CREATED
@@ -158,8 +216,6 @@ class BookingManager:
             if any(token in self.driver.current_url.lower() for token in ("order", "pay")):
                 return BookingOutcome.CREATED
             return BookingOutcome.UNKNOWN
-        if reason == "navigated":
-            return BookingOutcome.CREATED
         return BookingOutcome.UNKNOWN
 
     # ------------------------------------------------------------- 主流程
@@ -183,6 +239,9 @@ class BookingManager:
             return BookingOutcome.UNKNOWN
         if selection["status"] == "unavailable":
             logger.info("场格不可用（%s），换下一个候选", selection.get("detail"))
+            return BookingOutcome.UNAVAILABLE
+        if selection["status"] == "mismatch":
+            logger.warning("页面上已选的场次和候选不一致，不提交")
             return BookingOutcome.UNAVAILABLE
         if selection["status"] == "partial" and not allow_partial:
             logger.info("只选中部分时段且未开启 allow_partial，换下一个候选")

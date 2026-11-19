@@ -80,3 +80,31 @@ class ValidateForRunTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class SaveConfigTextTest(unittest.TestCase):
+    """页面「开始抢票」时带上的配置：先校验再落盘。"""
+
+    def setUp(self):
+        import tempfile
+
+        self.dir = tempfile.mkdtemp()
+        self.path = os.path.join(self.dir, "config.yaml")
+
+    def test_invalid_raises(self):
+        from src.web.server import save_config_text
+
+        with self.assertRaises(ValueError):
+            save_config_text(self.path, "user:\n  username: ''\n")
+
+    def test_valid_saves(self):
+        import yaml
+
+        from src.web.server import save_config_text
+
+        data = base()
+        save_config_text(self.path, yaml.safe_dump(data, allow_unicode=True))
+        from src.config import Config
+
+        loaded = Config(self.path)
+        self.assertEqual(loaded.get("user.username"), "13800138000")
+

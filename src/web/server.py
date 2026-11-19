@@ -290,6 +290,23 @@ class LoginChecker:
                 shutil.rmtree(profile, ignore_errors=True)
             self._lock.release()
 
+def save_config_text(config_path: str, text: str) -> None:
+    """校验并保存页面提交的 YAML；不合法抛 ValueError。"""
+    import yaml as _yaml
+
+    from ..config import DEFAULTS, deep_merge
+
+    parsed = _yaml.safe_load(text) or {}
+    if not isinstance(parsed, dict):
+        raise ValueError("配置顶层必须是字典")
+    config = Config(config_path)
+    config.config = deep_merge(DEFAULTS, parsed)
+    errors = validate_for_run(config.config)
+    if errors:
+        raise ValueError("；".join(errors))
+    config.save()
+
+
 def _handler_factory(runner: Runner, checker):
     class Handler(BaseHTTPRequestHandler):
         server_version = "BadmintonBooker/1.0"
@@ -379,20 +396,7 @@ def _handler_factory(runner: Runner, checker):
                 payload = self._body()
                 text = str(payload.get("yaml") or "")
                 try:
-                    import yaml as _yaml
-
-                    from ..config import DEFAULTS, deep_merge
-
-                    parsed = _yaml.safe_load(text) or {}
-                    if not isinstance(parsed, dict):
-                        raise ValueError("配置顶层必须是字典")
-                    config = Config(runner.config_path)
-                    config.config = deep_merge(DEFAULTS, parsed)
-                    errors = validate_for_run(config.config)
-                    if errors:
-                        self._json(400, {"ok": False, "error": "；".join(errors)})
-                        return
-                    config.save()
+                    save_config_text(runner.config_path, text)
                 except Exception as error:  # noqa: BLE001
                     self._json(400, {"ok": False, "error": str(error)})
                     return
@@ -407,7 +411,16 @@ def _handler_factory(runner: Runner, checker):
                 self._json(200 if result.get("ok") else 400, result)
                 return
             if path == "/api/start":
-                mode = str(self._body().get("mode") or "grab")
+                payload = self._body()
+                mode = str(payload.get("mode") or "grab")
+                text = str(payload.get("yaml") or "")
+                if text:
+                    # 页面点「开始」时带上的配置：先校验落盘，再启动，避免跑的是旧配置
+                    try:
+                        save_config_text(runner.config_path, text)
+                    except Exception as error:  # noqa: BLE001
+                        self._json(400, {"ok": False, "error": str(error)})
+                        return
                 ok, message = runner.start(mode)
                 self._json(200 if ok else 409, {"ok": ok, "message": message})
                 return

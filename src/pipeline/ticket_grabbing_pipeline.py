@@ -327,16 +327,12 @@ class TicketGrabbingPipeline(BasePipeline):
             return []
         cutoff = now.strftime("%H:%M") if play_day == now.date().isoformat() else None
         fallback = bool(self.config.get("booking.fallback_any", False))
-        page = self.query_manager.snapshot()
-        if page:
-            found = candidates(self.query_manager.free_slots(page), choices, cutoff, fallback)
-            if found:
-                return found
+        # 先把所有页的场地汇总，再按配置全局排序；否则第二页的首选会被第一页的备选盖掉
+        merged: Dict[str, Dict[str, str]] = {}
         for page in self.query_manager.iter_pages():
-            found = candidates(self.query_manager.free_slots(page), choices, cutoff, fallback)
-            if found:
-                return found
-        return []
+            for court, slots in self.query_manager.free_slots(page).items():
+                merged.setdefault(court, {}).update(slots)
+        return candidates(merged, choices, cutoff, fallback)
 
     # ------------------------------------------------------------- 放场窗口
 
@@ -346,15 +342,22 @@ class TicketGrabbingPipeline(BasePipeline):
         grace = float(self.config.get("runtime.release_grace_ms", 4000)) / 1000
         wake_at = opening - timedelta(seconds=lead)
         deadline = opening + timedelta(seconds=grace)
+        # 启动晚于窗口时也要给一次查询机会，不能直接判「没抢到」
+        now = self._now()
+        if now >= deadline:
+            deadline = now + timedelta(seconds=1)
+            self.logger.warning("启动时间已过放场宽限（%s），仍补查一次", now.isoformat(" "))
 
         if not self._wait_until(wake_at):
             return []
 
         baseline = None
         backoff = 0.0
+        queries = 0
         while not self.stopped and self._now() < deadline:
             now = self._now()
             probe = self.query_manager.probe(play_day)
+            queries += 1
             if probe.get("status") == 200:
                 if baseline is None and now < opening:
                     baseline = int(probe.get("length") or 0)
@@ -378,6 +381,9 @@ class TicketGrabbingPipeline(BasePipeline):
 
             if not self._sleep(interval):
                 return []
+        self.summary["probe_queries"] = queries
+        if queries == 0:
+            self.logger.error("放场窗口内一次查询都没发出")
         return []
 
     # ------------------------------------------------------------- 主流程
@@ -452,9 +458,14 @@ class TicketGrabbingPipeline(BasePipeline):
         self._note(state="grabbing")
         found = self._grab(play_day.isoformat(), target, choices)
         if not found:
-            self._note(state="missed", message="放场窗口内没有读到可订场次")
-            self.logger.warning("入场日 %s 在放场窗口内没有可订场次", play_day)
-            self._notify_failure(f"{play_day} 没有读到可订场次（放场窗口内）")
+            queries = int(self.summary.get("probe_queries") or 0)
+            if queries == 0:
+                message = "启动时已过放场窗口，一次查询都没发出"
+            else:
+                message = f"放场窗口内查询 {queries} 次，没有可订场次"
+            self._note(state="missed", message=message)
+            self.logger.warning("入场日 %s：%s", play_day, message)
+            self._notify_failure(f"{play_day}：{message}")
             return False
 
         self._note(candidates=[{"court": c, "slots": s} for c, s in found])
@@ -465,7 +476,8 @@ class TicketGrabbingPipeline(BasePipeline):
             self.logger.info("候选 %s/%s：%s %s", index, min(len(found), max_attempts), court, ", ".join(slots))
             started = time.monotonic()
             if index == 1 and getattr(self, "submit_captcha", None) and self.submit_captcha.presolved:
-                if self._submit_presolved(court, slots):
+                presolved_result = self._submit_presolved(court, slots)
+                if presolved_result == "ok":
                     elapsed = int((time.monotonic() - started) * 1000)
                     self.summary.setdefault("timings", {})[f"attempt_{index}_ms"] = elapsed
                     self.summary["presolved_used"] = True
@@ -477,7 +489,13 @@ class TicketGrabbingPipeline(BasePipeline):
                         self.summary["keep_open_seconds"] = keep_open
                         self._sleep(keep_open)
                     return True
-                self.logger.info("预解 token 提交未成功，回落到现场识别")
+                if presolved_result == "unknown":
+                    self._note(state="unknown", outcome="unknown",
+                               message="预解提交结果未知，请到平台核对订单")
+                    self.logger.error("预解提交结果未知：可能已建单，停止自动重试，请核对订单")
+                    self._notify_failure(f"{court} {'、'.join(slots)} 提交结果未知，请核对订单")
+                    return False
+                self.logger.info("预解 token 提交被拒绝，回落到现场识别")
             outcome = self.booking_manager.book_court(
                 court_name=court,
                 time_slots=slots,
@@ -516,24 +534,29 @@ class TicketGrabbingPipeline(BasePipeline):
         self._notify_failure(f"{play_day} 的候选在提交时都被抢完了")
         return False
 
-    def _submit_presolved(self, court: str, slots: List[str]) -> bool:
-        """选场 → 点提交 → 用预解 token 直接下单（不现场解验证码）。"""
+    def _submit_presolved(self, court: str, slots: List[str]) -> str:
+        """选场 → 点提交 → 用预解 token 下单。
+
+        返回 "ok" / "rejected" / "unknown"：
+        - rejected：确认没选上场或提交没发出去，可以安全地换候选；
+        - unknown：提交可能已经发出去但没拿到可靠回执，必须停下来核对订单。
+        """
         try:
             selected = self.booking_manager.select_slots(court, slots)
         except Exception as error:  # noqa: BLE001
             self.logger.warning("预解路径选场异常: %s", error)
-            return False
+            return "rejected"
         if selected.get("status") not in ("selected", "partial"):
             self.logger.info("预解路径没选中场格: %s", selected)
-            return False
+            return "rejected"
         started = time.monotonic()
         if not self.submit_captcha.submit_selected():
-            self.logger.warning("预解 token 提交失败")
-            return False
+            self.logger.warning("预解 token 提交动作失败，结果未知")
+            return "unknown"
         timeout = float(self.config.get("runtime.submit_timeout_ms", 6000)) / 1000
         ok = self.submit_captcha.wait_success(timeout=timeout)
         self.summary.setdefault("timings", {})["presolved_submit_ms"] = int((time.monotonic() - started) * 1000)
-        return ok
+        return "ok" if ok else "unknown"
 
     def _rehearse(self, found: List[Tuple[str, List[str]]]) -> bool:
         """演练：真的去点场格，但绝不提交订单。用来验证选择器和选中逻辑。"""
