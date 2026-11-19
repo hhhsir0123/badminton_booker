@@ -150,6 +150,9 @@ function switchTab(name) {
   $$('.tab-panel').forEach((panel) => {
     panel.hidden = panel.dataset.panel !== name;
   });
+  // 核心日志只在抢票/轮询分区展示，系统设置不显示
+  const logPanel = $('#log-panel');
+  if (logPanel) logPanel.hidden = name === 'system';
   refreshNeeds();
 }
 
