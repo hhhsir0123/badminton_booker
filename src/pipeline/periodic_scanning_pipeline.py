@@ -85,31 +85,6 @@ class PeriodicScanningPipeline(BasePipeline):
 
     def _send_notifications(self, booked_courts, valid_courts):
         self._send_feishu(booked_courts, valid_courts)
-        if not getattr(self, "email_notifier", None):
-            return
-        user_email = self.config.get("user.email")
-        if not user_email:
-            return
-        try:
-            if booked_courts:
-                for court, slots in booked_courts:
-                    self.email_notifier.send_booking_success(
-                        to_email=user_email,
-                        booking_info={
-                            "venue_type": self.venue_type,
-                            "date": self._dates()[0],
-                            "time_slot": ", ".join(slots),
-                            "court_name": court,
-                            "partners": [self.partner_name] if self.partner_name else [],
-                        },
-                    )
-            elif valid_courts:
-                self.email_notifier.send_availability_notification(
-                    to_email=user_email,
-                    available_courts={court: slots for court, slots in valid_courts},
-                )
-        except Exception as error:  # noqa: BLE001
-            self.logger.error("发送邮件失败: %s", error)
 
     def _send_feishu(self, booked_courts, valid_courts):
         notifier = getattr(self, "feishu_notifier", None)

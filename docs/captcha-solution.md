@@ -243,7 +243,21 @@ https://storage.googleapis.com/chrome-for-testing-public/<version>/win64/chromed
 
 ---
 
-## 四、代码地图
+## 四、样本
+
+真实验证码样本在仓库里，方便离线复现和调参：
+
+```
+captcha_images/
+├── samples/           登录验证码（4 位数字）
+└── submit_samples/    下单点选验证码，每张 png 配一个 {"words": [...]} 的 json
+```
+
+`submit_samples` 里的词表就是当时的目标字，可以用来测识别准确率（`test_files/bench_captcha_compare.py`）。
+
+---
+
+## 五、代码地图
 
 | 文件 | 作用 |
 | --- | --- |
@@ -257,7 +271,7 @@ https://storage.googleapis.com/chrome-for-testing-public/<version>/win64/chromed
 
 ---
 
-## 五、配置
+## 六、配置
 
 ```yaml
 captcha:
@@ -274,7 +288,7 @@ captcha:
 
 ---
 
-## 六、真机验证结果（2026-11-19）
+## 七、真机验证结果（2026-11-19）
 
 ### 全链路（乒乓球，真实下单）
 
@@ -308,7 +322,7 @@ T+10s  用同一 token + 真实表单调 submitData
 
 ---
 
-## 七、运维手册
+## 八、运维手册
 
 ### 首次部署
 
@@ -340,7 +354,7 @@ T+10s  用同一 token + 真实表单调 submitData
 
 ---
 
-## 八、还没做完的事
+## 九、还没做完的事
 
 1. **预解通过率样本量不足**：目前 2/2，需要 30~50 张统计真实数字；
 2. **羽毛球链路未跑通真实 07:00**：代码已接通，但要在真实放场时间验证一次；

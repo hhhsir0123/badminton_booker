@@ -565,21 +565,6 @@ class TicketGrabbingPipeline(BasePipeline):
         feishu = getattr(self, "feishu_notifier", None)
         if feishu and self.config.get("feishu.notify_success", True):
             feishu.send_booking_success(play_day.isoformat(), court, slots, partners)
-        if not self.email_notifier:
-            return
-        try:
-            self.email_notifier.send_booking_success(
-                to_email=self.config.get("user.email"),
-                booking_info={
-                    "venue_type": self.config.get("booking.venue_type", "羽毛球"),
-                    "date": play_day.isoformat(),
-                    "time_slot": ", ".join(slots),
-                    "court_name": court,
-                    "partners": partners,
-                },
-            )
-        except Exception as error:  # noqa: BLE001
-            self.logger.warning("发送成功邮件失败: %s", error)
 
     def _notify_failure(self, message: str):
         feishu = getattr(self, "feishu_notifier", None)

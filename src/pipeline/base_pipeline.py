@@ -19,7 +19,6 @@ from ..core.browser import BrowserManager
 from ..core.court_booking import BookingManager
 from ..core.court_query import QueryManager
 from ..core.login import LoginManager
-from ..utils.email_notifier import EmailNotifier
 from ..utils.captcha_solver import CaptchaSolver
 from ..utils.feishu_notifier import FeishuNotifier
 from ..utils.logger import setup_logger
@@ -44,26 +43,11 @@ class BasePipeline(ABC):
         self.login_manager: Optional[LoginManager] = None
         self.captcha_recognizer: Optional[CaptchaRecognizer] = None
         self.captcha_solver: Optional[CaptchaSolver] = None
-        self.email_notifier: Optional[EmailNotifier] = self._init_email_notifier()
         self.feishu_notifier: Optional[FeishuNotifier] = self._init_feishu_notifier()
         self._stopped = threading.Event()
         self.summary: Dict[str, object] = {}
 
     # ------------------------------------------------------------- 生命周期
-
-    def _init_email_notifier(self) -> Optional[EmailNotifier]:
-        server = self.config.get("email.smtp_server")
-        sender = self.config.get("email.sender_email")
-        password = self.config.get("email.sender_password")
-        if not all([server, sender, password]):
-            return None
-        return EmailNotifier(
-            smtp_server=server,
-            smtp_port=self.config.get("email.smtp_port", 465),
-            sender_email=sender,
-            sender_password=password,
-            use_ssl=self.config.get("email.use_ssl", True),
-        )
 
     def _init_feishu_notifier(self) -> Optional[FeishuNotifier]:
         webhook = self.config.get("feishu.webhook", "")

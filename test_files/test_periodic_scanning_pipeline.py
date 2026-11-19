@@ -25,7 +25,7 @@ def make_pipeline(**overrides):
     pipeline.logger = Mock()
     pipeline.summary = {}
     pipeline.config = FakeConfig(
-        {"user.email": "me@example.com", "booking.venue_type": "羽毛球", "user.partner_name": ""}
+        {"booking.venue_type": "羽毛球", "user.partner_name": ""}
     )
     pipeline.scan_interval = 0
     pipeline.polling_time_slots = []
@@ -34,7 +34,6 @@ def make_pipeline(**overrides):
     pipeline.is_auto_booking = False
     pipeline.partner_name = ""
     pipeline.venue_type = "羽毛球"
-    pipeline.email_notifier = None
     pipeline.query_manager = Mock()
     pipeline.query_manager.query_available_courts.return_value = {}
     pipeline.booking_manager = Mock()
@@ -90,7 +89,6 @@ class ScanTest(unittest.TestCase):
         pipeline = make_pipeline(
             is_auto_booking=True,
             polling_time_slots=["19:00-20:00"],
-            email_notifier=Mock(),
         )
         pipeline.query_manager.query_available_courts.return_value = {
             "训练馆3号": ["19:00-20:00"]
@@ -98,22 +96,19 @@ class ScanTest(unittest.TestCase):
         pipeline.booking_manager.book_court.return_value = BookingOutcome.CREATED
         pipeline._perform_scan()
         pipeline.booking_manager.book_court.assert_called_once()
-        pipeline.email_notifier.send_booking_success.assert_called_once()
 
     def test_availability_only(self):
-        pipeline = make_pipeline(email_notifier=Mock(), polling_time_slots=["19:00-20:00"])
+        pipeline = make_pipeline(polling_time_slots=["19:00-20:00"])
         pipeline.query_manager.query_available_courts.return_value = {
             "训练馆3号": ["19:00-20:00"]
         }
         pipeline._perform_scan()
         pipeline.booking_manager.book_court.assert_not_called()
-        pipeline.email_notifier.send_availability_notification.assert_called_once()
 
     def test_unknown_outcome_stops(self):
         pipeline = make_pipeline(
             is_auto_booking=True,
             polling_time_slots=["19:00-20:00"],
-            email_notifier=None,
         )
         pipeline.query_manager.query_available_courts.return_value = {
             "训练馆3号": ["19:00-20:00"]
@@ -122,7 +117,7 @@ class ScanTest(unittest.TestCase):
         pipeline._perform_scan()
         self.assertEqual(pipeline.booking_manager.book_court.call_count, 1)
 
-    def test_no_email_notifier(self):
+    def test_no_notifier_configured(self):
         pipeline = make_pipeline(polling_time_slots=["19:00-20:00"])
         pipeline.query_manager.query_available_courts.return_value = {
             "训练馆3号": ["19:00-20:00"]

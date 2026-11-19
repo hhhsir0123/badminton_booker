@@ -319,7 +319,6 @@
     const booking = config.booking || {};
     const login = config.login || {};
     const polling = config.polling || {};
-    const email = config.email || {};
     const feishu = config.feishu || {};
     const runtime = config.runtime || {};
     const captcha = config.captcha || {};
@@ -328,7 +327,6 @@
     lines.push('user:');
     lines.push('  username: ' + emitScalar(user.username || ''));
     lines.push('  password: ' + emitScalar(user.password || ''));
-    lines.push('  email: ' + emitScalar(user.email || ''));
     lines.push('  partner_name: ' + emitScalar(user.partner_name || ''));
     lines.push('');
 
@@ -373,14 +371,6 @@
     lines.push('  is_auto_booking: ' + emitScalar(Boolean(polling.is_auto_booking)));
     lines.push('');
 
-    lines.push('email:');
-    lines.push('  smtp_server: ' + emitScalar(email.smtp_server || ''));
-    lines.push('  smtp_port: ' + emitScalar(Number(email.smtp_port || 465)));
-    lines.push('  sender_email: ' + emitScalar(email.sender_email || ''));
-    lines.push('  sender_password: ' + emitScalar(email.sender_password || ''));
-    lines.push('  use_ssl: ' + emitScalar(email.use_ssl !== false));
-    lines.push('');
-
     lines.push('feishu:');
     lines.push('  webhook: ' + emitScalar(feishu.webhook || ''));
     lines.push('  secret: ' + emitScalar(feishu.secret || ''));
@@ -423,7 +413,7 @@
 
   function defaults() {
     return {
-      user: { username: '', password: '', email: '', partner_name: '' },
+      user: { username: '', password: '', partner_name: '' },
       booking: {
         venue_type: '羽毛球',
         target_time_in_day: '07:00:00',
@@ -453,7 +443,6 @@
         is_auto_booking: false
       },
       web: { host: '127.0.0.1', port: 8765, auto_open: true },
-      email: { smtp_server: '', smtp_port: 465, sender_email: '', sender_password: '', use_ssl: true },
       feishu: {
         webhook: '',
         secret: '',

@@ -24,7 +24,6 @@ DEFAULTS: Dict[str, Any] = {
     "user": {
         "username": "",
         "password": "",
-        "email": "",
         "partner_name": "",
     },
     "booking": {
@@ -62,13 +61,6 @@ DEFAULTS: Dict[str, Any] = {
         "polling_time_slots": [],
         "polling_date_offsets": [0, 1, 2],
         "is_auto_booking": False,
-    },
-    "email": {
-        "smtp_server": "",
-        "smtp_port": 465,
-        "sender_email": "",
-        "sender_password": "",
-        "use_ssl": True,
     },
     "feishu": {
         # 群机器人 Incoming Webhook；留空则关闭
@@ -225,10 +217,6 @@ def validate_config(data: Dict[str, Any]) -> List[str]:
             if not _is_int(offset) or not 0 <= offset <= 30:
                 errors.append("轮询日期偏移应为 0~30 的整数")
                 break
-
-    smtp_port = _get(data, "email.smtp_port", 465)
-    if not _is_int(smtp_port) or not 1 <= smtp_port <= 65535:
-        errors.append("SMTP 端口不合法")
 
     webhook = _get(data, "feishu.webhook", "")
     if webhook not in ("", None):
