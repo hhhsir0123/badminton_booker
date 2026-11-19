@@ -1,4 +1,5 @@
 """纯逻辑单元测试：不启动浏览器，覆盖时间规划、候选匹配、配置与页面接口映射。"""
+import copy
 import atexit
 import os
 import shutil
@@ -356,3 +357,15 @@ class ExampleConfigTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class WholeHourTest(unittest.TestCase):
+    def test_reject_half_hour(self):
+        data = copy.deepcopy(DEFAULTS)
+        data["booking"]["preferences"] = [{"court": "任意", "start": "19:30", "end": "21:00"}]
+        self.assertTrue(any("整点" in item for item in validate_config(data)))
+
+    def test_accept_whole_hour(self):
+        data = copy.deepcopy(DEFAULTS)
+        data["booking"]["preferences"] = [{"court": "任意", "start": "19:00", "end": "21:00"}]
+        self.assertFalse(any("整点" in item for item in validate_config(data)))
+

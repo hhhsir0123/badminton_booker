@@ -4,7 +4,6 @@
 
 const IO = window.ConfigIO;
 const DRAFT_KEY = 'bb.config.draft';
-const FILE_NAME = 'config.yaml';
 
 // 场地是固定的：学院路校区羽毛球馆一共 10 片
 const COURTS = [
@@ -14,10 +13,12 @@ const COURTS = [
   '训练馆7号', '训练馆8号', '训练馆9号', '训练馆10号'
 ];
 
+// 平台按整点放场：候选时段只允许整点
+const HOURS = Array.from({ length: 15 }, (_, index) => `${String(index + 8).padStart(2, '0')}:00`);
+
 const state = {
   config: null,
   dirty: false,
-  sourceName: ''
 };
 
 const $ = (selector, root) => (root || document).querySelector(selector);
@@ -31,15 +32,8 @@ function feedback(text, kind) {
   node.className = `feedback${kind ? ' ' + kind : ''}`;
 }
 
-function setStatus(text, kind) {
-  const node = $('#status');
-  node.textContent = text;
-  node.dataset.state = kind || '';
-}
-
 function markDirty() {
   state.dirty = true;
-  setStatus('有未保存修改', 'dirty');
   saveDraftSoon();
 }
 
@@ -81,12 +75,28 @@ function fillCourtOptions(select, value) {
   select.value = value && options.indexOf(value) >= 0 ? value : options[0];
 }
 
+function fillHourOptions(select, value) {
+  const options = HOURS.slice();
+  // 旧配置里可能有非整点，保留下来，导出时提示用户改
+  if (value && options.indexOf(value) < 0) {
+    options.push(value);
+  }
+  select.textContent = '';
+  options.forEach((hour) => {
+    const option = document.createElement('option');
+    option.value = hour;
+    option.textContent = hour;
+    select.appendChild(option);
+  });
+  select.value = value && options.indexOf(value) >= 0 ? value : options[0];
+}
+
 function addRow(item) {
   const row = $('#pref-template').content.firstElementChild.cloneNode(true);
   const courtSelect = row.querySelector('select[name="court"]');
   fillCourtOptions(courtSelect, item && item.court ? item.court : '任意');
-  row.querySelector('input[name="start"]').value = item && item.start ? item.start : '19:00';
-  row.querySelector('input[name="end"]').value = item && item.end ? item.end : '21:00';
+  fillHourOptions(row.querySelector('select[name="start"]'), item && item.start ? item.start : '19:00');
+  fillHourOptions(row.querySelector('select[name="end"]'), item && item.end ? item.end : '21:00');
   row.addEventListener('click', (event) => {
     const action = event.target.dataset ? event.target.dataset.act : null;
     if (!action) return;
@@ -103,6 +113,7 @@ function addRow(item) {
     }
     renumber();
     applyForm();
+    refreshPrefSummary();
     markDirty();
   });
   $('#preferences').appendChild(row);
@@ -129,11 +140,14 @@ function render() {
   $('#interval').value = polling.polling_interval;
   $('#days').value = (polling.polling_date_offsets || []).join(', ');
   $('#username').value = config.user.username || '';
+  $('#password').value = config.user.password || '';
   $('#partner').value = config.user.partner_name || '';
   $('#provider').value = captcha.provider === 'ttshitu' ? 'ttshitu' : 'local';
   $('#tts-user').value = tts.username || '';
   $('#tts-pass').value = tts.password || '';
   $('#tts-type').value = tts.type_id || 43;
+  $('#poll-slots').value = (polling.polling_time_slots || []).join(', ');
+  $('#auto-booking').checked = Boolean(polling.is_auto_booking);
   $('#attempts').value = booking.max_attempts;
   $('#partial').checked = Boolean(booking.allow_partial);
   $('#fallback').checked = Boolean(booking.fallback_any);
@@ -143,9 +157,52 @@ function render() {
   $('#secret').value = config.feishu.secret || '';
   $('#mention-all').checked = Boolean(config.feishu.mention_all);
   renderPreferences(booking.preferences);
+  refreshPrefSummary();
   toggleProvider();
-  $('#file-name').textContent = state.sourceName ? `当前来源：${state.sourceName}` : '';
-  updatePreview();
+  refreshNeeds();
+}
+
+function switchTab(name) {
+  $$('.tab').forEach((button) => {
+    const active = button.dataset.tab === name;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  $$('.tab-panel').forEach((panel) => {
+    panel.hidden = panel.dataset.panel !== name;
+  });
+  // 核心日志只在抢票/轮询分区展示，系统设置不显示
+  const logPanel = $('#log-panel');
+  if (logPanel) logPanel.hidden = name === 'system';
+  refreshNeeds();
+}
+
+function refreshNeeds() {
+  const targets = [
+    ['username', '#username'],
+    ['password', '#password'],
+    ['partner', '#partner'],
+    ['tts-user', '#tts-user'],
+    ['tts-pass', '#tts-pass']
+  ];
+  let missing = 0;
+  targets.forEach(([key, selector]) => {
+    const label = $(`.need[data-need="${key}"]`);
+    const input = $(selector);
+    if (!label || !input) return;
+    const hidden = Boolean(input.closest('[hidden]'));
+    const empty = !input.value.trim();
+    const needs = empty && !hidden;
+    label.classList.toggle('needs', needs);
+    if (needs) missing += 1;
+  });
+  const banner = $('#banner');
+  if (missing) {
+    banner.hidden = false;
+    banner.textContent = `还有 ${missing} 项需要你填写（标了「待填写」的字段）；其余项保持默认即可。`;
+  } else {
+    banner.hidden = true;
+  }
 }
 
 function toggleProvider() {
@@ -164,12 +221,18 @@ function applyForm() {
   config.booking.fallback_any = $('#fallback').checked;
   config.booking.preferences = $$('.pref-row').map((row) => ({
     court: row.querySelector('select[name="court"]').value,
-    start: row.querySelector('input[name="start"]').value,
-    end: row.querySelector('input[name="end"]').value
+    start: row.querySelector('select[name="start"]').value,
+    end: row.querySelector('select[name="end"]').value
   }));
   config.polling.polling_interval = numberValue('#interval');
   config.polling.polling_date_offsets = parseDays($('#days').value);
+  config.polling.polling_time_slots = $('#poll-slots').value
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length);
+  config.polling.is_auto_booking = $('#auto-booking').checked;
   config.user.username = $('#username').value.trim();
+  config.user.password = $('#password').value;
   config.user.partner_name = $('#partner').value.trim();
   config.captcha = config.captcha || {};
   config.captcha.provider = $('#provider').value === 'ttshitu' ? 'ttshitu' : 'local';
@@ -187,6 +250,59 @@ function applyForm() {
   config.feishu.mention_all = $('#mention-all').checked;
 }
 
+
+// ------------------------------------------------------------------ 登录校验
+
+let verifiedKey = '';
+
+function credentialKey() {
+  return `${$('#username').value.trim()}|${$('#password').value}`;
+}
+
+async function checkLogin(silent) {
+  if (!apiReady) {
+    feedback('页面没连上本地控制台，无法测试登录', 'warn');
+    return false;
+  }
+  const username = $('#username').value.trim();
+  const password = $('#password').value;
+  if (!username) {
+    markField('#username', '请填写登录手机号');
+    feedback('请先填写登录手机号', 'error');
+    return false;
+  }
+  const state = $('#login-state');
+  state.textContent = '验证中…';
+  state.dataset.state = 'dirty';
+  if (!silent) feedback('正在用这套账号登录一次，请稍候…', '');
+  try {
+    const result = await api('/api/login-check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password })
+    });
+    state.textContent = '已验证';
+    state.dataset.state = 'ok';
+    verifiedKey = credentialKey();
+    feedback(result.message || '登录验证通过', 'ok');
+    return true;
+  } catch (error) {
+    state.textContent = '验证失败';
+    state.dataset.state = 'error';
+    feedback(`登录验证失败：${error.message}`, 'error');
+    return false;
+  }
+}
+
+function refreshPrefSummary() {
+  const node = $('#pref-summary');
+  if (!node) return;
+  const count = $$('.pref-row').length;
+  const attempts = Number($('#attempts').value) || 0;
+  const tried = Math.min(count, attempts);
+  node.textContent = `已配置 ${count} 条候选，最多提交 ${attempts} 次（只会尝试前 ${tried} 条）；候选条数不限。`;
+}
+
 // ------------------------------------------------------------------ 草稿
 
 let draftTimer = null;
@@ -194,7 +310,7 @@ function saveDraftSoon() {
   clearTimeout(draftTimer);
   draftTimer = setTimeout(() => {
     try {
-      localStorage.setItem(DRAFT_KEY, JSON.stringify({ config: state.config, sourceName: state.sourceName }));
+      localStorage.setItem(DRAFT_KEY, JSON.stringify({ config: state.config }));
     } catch (error) {
       /* 隐私模式下 localStorage 可能不可用，忽略即可 */
     }
@@ -212,22 +328,73 @@ function loadDraft() {
   }
 }
 
-// ------------------------------------------------------------------ 预览 / 校验
 
-let previewTimer = null;
-function updatePreview() {
-  const node = $('#preview');
-  try {
-    node.textContent = IO.emit(state.config);
-  } catch (error) {
-    node.textContent = `生成失败：${error.message}`;
+// ------------------------------------------------------------------ 系统设置校验
+
+const PHONE_RE = /^1[3-9]\d{9}$/;
+const NAME_RE = /^[\u4e00-\u9fa5A-Za-z·\s]{2,20}$/;
+
+function clearFieldErrors() {
+  $$('.field-error').forEach((node) => node.remove());
+  $$('label.invalid').forEach((label) => label.classList.remove('invalid'));
+}
+
+function markField(selector, message) {
+  const input = $(selector);
+  if (!input) return;
+  const label = input.closest('label');
+  if (!label) return;
+  label.classList.add('invalid');
+  const hint = document.createElement('small');
+  hint.className = 'field-error';
+  hint.textContent = message;
+  label.appendChild(hint);
+}
+
+function collectSystemErrors() {
+  clearFieldErrors();
+  const messages = [];
+  const fail = (selector, message) => {
+    markField(selector, message);
+    messages.push(message);
+  };
+
+  const username = $('#username').value.trim();
+  if (!username) {
+    fail('#username', '请填写登录手机号');
+  } else if (!PHONE_RE.test(username)) {
+    fail('#username', '手机号应为 11 位数字');
   }
+
+  const password = $('#password').value;
+  if (!password) {
+    fail('#password', '请填写登录密码');
+  }
+
+  const partner = $('#partner').value.trim();
+  if (!partner) {
+    fail('#partner', '请填写默认同伴');
+  } else if (!NAME_RE.test(partner)) {
+    fail('#partner', '同伴姓名不合法（2~20 个中文/字母）');
+  }
+
+  if ($('#provider').value === 'ttshitu') {
+    if (!$('#tts-user').value.trim()) fail('#tts-user', '请填写图鉴用户名');
+    if (!$('#tts-pass').value) fail('#tts-pass', '请填写图鉴密码');
+    const typeId = Number($('#tts-type').value);
+    if (!Number.isInteger(typeId) || typeId < 1 || typeId > 99) {
+      fail('#tts-type', '题型应为 1~99 的整数');
+    }
+  }
+
+  if (messages.length) {
+    switchTab('system');
+    feedback(messages.join('；'), 'error');
+  }
+  return messages;
 }
 
-function schedulePreview() {
-  clearTimeout(previewTimer);
-  previewTimer = setTimeout(updatePreview, 200);
-}
+// ------------------------------------------------------------------ 校验
 
 function validateOrReport() {
   applyForm();
@@ -240,114 +407,189 @@ function validateOrReport() {
   return true;
 }
 
-// ------------------------------------------------------------------ 导入 / 导出
+// ------------------------------------------------------------------ 本地控制台 API
 
-function importFile(file) {
-  const reader = new FileReader();
-  reader.onload = () => {
-    try {
-      const parsed = IO.parse(String(reader.result));
-      state.config = IO.normalize(parsed);
-      state.sourceName = file.name;
-      state.dirty = false;
-      render();
-      setStatus('已载入', 'ok');
-      feedback(`已载入 ${file.name}，共 ${state.config.booking.preferences.length} 条候选`, 'ok');
-    } catch (error) {
-      feedback(`解析失败：${error.message}`, 'error');
-      setStatus('解析失败', 'error');
+let apiReady = false;
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.ok === false) {
+    throw new Error(data.error || data.message || response.statusText);
+  }
+  return data;
+}
+
+function applyStatus(status) {
+  const running = status.state === "running";
+  const mode = status.mode || "";
+  const grabState = $("#grab-state");
+  const pollState = $("#poll-state");
+  const label = (which) => {
+    if (running) {
+      return mode === which ? ["运行中", "ok"] : ["未运行", ""];
     }
+    const table = { done: ["已完成", "ok"], failed: ["失败", "error"], stopped: ["已停止", ""], idle: ["未运行", ""] };
+    return table[status.state] || table.idle;
   };
-  reader.onerror = () => feedback('读取文件失败', 'error');
-  reader.readAsText(file, 'utf-8');
+  const [gt, gk] = label("grab");
+  const [pt, pk] = label("poll");
+  grabState.textContent = gt;
+  grabState.dataset.state = gk;
+  pollState.textContent = pt;
+  pollState.dataset.state = pk;
+  if (status.message) {
+    if (running && mode === "grab") $("#grab-hint").textContent = status.message;
+    if (running && mode === "poll") $("#poll-hint").textContent = status.message;
+    if (!running) {
+      $("#grab-hint").textContent = status.message;
+      $("#poll-hint").textContent = status.message;
+    }
+  }
+  const core = $("#core-log");
+  if (Array.isArray(status.core) && status.core.length) {
+    core.textContent = status.core.slice(-40).join("\n");
+    core.scrollTop = core.scrollHeight;
+  }
 }
 
-function yamlText() {
-  return IO.emit(state.config);
-}
-
-function download(text) {
-  const blob = new Blob([text], { type: 'text/yaml;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = FILE_NAME;
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 2000);
-}
-
-async function copyText(text) {
+async function refreshStatus() {
+  if (!apiReady) return;
   try {
-    await navigator.clipboard.writeText(text);
-    return true;
+    applyStatus(await api('/api/status'));
   } catch (error) {
-    const area = document.createElement('textarea');
-    area.value = text;
-    area.style.position = 'fixed';
-    area.style.opacity = '0';
-    document.body.appendChild(area);
-    area.select();
-    const ok = document.execCommand('copy');
-    area.remove();
-    return ok;
+    apiReady = false;
+  }
+}
+
+async function detectApi() {
+  try {
+    applyStatus(await api('/api/status'));
+    apiReady = true;
+    // 控制台模式下，以服务端的 config.yaml 为准（页面不能从空白默认值开始）
+    try {
+      const data = await api('/api/config');
+      if (data.yaml) {
+        state.config = IO.normalize(IO.parse(data.yaml));
+        render();
+      }
+    } catch (error) {
+      /* 读不到就沿用默认值，不阻塞启停 */
+    }
+    setInterval(refreshStatus, 2000);
+  } catch (error) {
+    apiReady = false;
+    $('#grab-state').textContent = '静态模式';
+    $('#poll-state').textContent = '静态模式';
+    const hint = '页面没有连上本地控制台：请用「启动控制台」脚本打开，才能保存配置和启停程序。';
+    $('#grab-hint').textContent = hint;
+    $('#poll-hint').textContent = hint;
+  }
+}
+
+async function saveToProgram() {
+  if (!apiReady) {
+    feedback('当前是静态模式，请用「导出 config.yaml」手动覆盖', 'warn');
+    return;
+  }
+  if (collectSystemErrors().length) return;
+  if (credentialKey() !== verifiedKey) {
+    const ok = await checkLogin(true);
+    if (!ok) return;
+  }
+  if (!validateOrReport()) return;
+  try {
+    await api('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ yaml: IO.emit(state.config) })
+    });
+    state.dirty = false;
+    feedback('已写入 config.yaml', 'ok');
+  } catch (error) {
+    feedback(`保存失败：${error.message}`, 'error');
+  }
+}
+
+async function startRun(mode) {
+  if (!apiReady) {
+    feedback('静态模式不能启动程序，请用 python main.py --web', 'warn');
+    return;
+  }
+  if (collectSystemErrors().length) return;
+  if (!validateOrReport()) return;
+  try {
+    // 不自动保存：改完请先点「保存配置到程序」，避免把没加载完的默认值写进去
+    const result = await api('/api/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode })
+    });
+    feedback(result.message || '已启动', 'ok');
+    refreshStatus();
+  } catch (error) {
+    feedback(`启动失败：${error.message}`, 'error');
+  }
+}
+
+async function stopRun() {
+  if (!apiReady) return;
+  try {
+    const result = await api('/api/stop', { method: 'POST' });
+    feedback(result.message || '正在停止', 'warn');
+    refreshStatus();
+  } catch (error) {
+    feedback(`停止失败：${error.message}`, 'error');
   }
 }
 
 // ------------------------------------------------------------------ 事件
 
 function bind() {
-  $('#config').addEventListener('input', () => {
+  $('#config').addEventListener('input', (event) => {
+    if (event.target.id === 'username' || event.target.id === 'password') {
+      verifiedKey = '';
+      const state = $('#login-state');
+      if (state) {
+        state.textContent = '未验证';
+        state.dataset.state = '';
+      }
+    }
+    refreshPrefSummary();
+    const label = event.target.closest('label');
+    if (label && label.classList.contains('invalid')) {
+      label.classList.remove('invalid');
+      const hint = label.querySelector('.field-error');
+      if (hint) hint.remove();
+    }
     applyForm();
+    refreshNeeds();
     markDirty();
-    schedulePreview();
+  });
+
+  $$('.tab').forEach((button) => {
+    button.addEventListener('click', () => switchTab(button.dataset.tab));
   });
 
   $('#add').addEventListener('click', () => {
     addRow({ court: '任意', start: '19:00', end: '21:00' });
     applyForm();
     markDirty();
-    schedulePreview();
   });
 
   $('#provider').addEventListener('change', () => {
     toggleProvider();
     applyForm();
+    refreshNeeds();
     markDirty();
-    schedulePreview();
   });
 
-  $('#import').addEventListener('click', () => $('#file').click());
-  $('#file').addEventListener('change', (event) => {
-    const file = event.target.files && event.target.files[0];
-    if (file) importFile(file);
-    event.target.value = '';
-  });
-
-  $('#export').addEventListener('click', () => {
-    if (!validateOrReport()) return;
-    download(yamlText());
-    state.dirty = false;
-    setStatus('已导出', 'ok');
-    feedback(`已生成 ${FILE_NAME}，请覆盖项目根目录里的同名文件`, 'ok');
-  });
-
-  $('#copy').addEventListener('click', async () => {
-    if (!validateOrReport()) return;
-    const ok = await copyText(yamlText());
-    feedback(ok ? '配置内容已复制到剪贴板' : '复制失败，请手动选择预览区内容', ok ? 'ok' : 'error');
-  });
-
-  $('#reset').addEventListener('click', () => {
-    if (!window.confirm('恢复默认配置？当前修改会丢失。')) return;
-    state.config = IO.defaults();
-    state.sourceName = '';
-    state.dirty = true;
-    render();
-    setStatus('默认配置', 'dirty');
-    feedback('已恢复默认值', 'ok');
-  });
+  $('#start').addEventListener('click', () => startRun('grab'));
+  $('#stop').addEventListener('click', stopRun);
+  $('#poll-start').addEventListener('click', () => startRun('poll'));
+  $('#poll-stop').addEventListener('click', stopRun);
+  $('#save').addEventListener('click', saveToProgram);
+  $('#test-login').addEventListener('click', () => checkLogin(false));
 
   window.addEventListener('beforeunload', (event) => {
     if (!state.dirty) return undefined;
@@ -356,23 +598,16 @@ function bind() {
     return '';
   });
 
-  document.addEventListener('keydown', (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
-      event.preventDefault();
-      $('#export').click();
-    }
-  });
 }
 
 function boot() {
   const draft = loadDraft();
   state.config = draft ? IO.normalize(draft.config) : IO.defaults();
-  state.sourceName = draft ? draft.sourceName || '' : '';
   bind();
   render();
+  detectApi();
   if (draft) {
-    setStatus('草稿已恢复', 'dirty');
-    feedback('已恢复上次未导出的编辑内容', '');
+    feedback('已恢复上次未保存的编辑内容', '');
   }
 }
 

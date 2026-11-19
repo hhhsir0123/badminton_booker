@@ -89,6 +89,24 @@
 | `src/utils/ttshitu_provider.py` | 图鉴打码客户端（typeid=43 闭集匹配） |
 | `src/utils/feishu_notifier.py` | 飞书卡片 + HMAC 签名，失败不影响主流程 |
 | `src/web/*` | 纯静态配置页（解析/生成 YAML、校验、草稿） |
+| `src/web/server.py` | 本地控制台：静态页 + `/api/config`、`/api/start`、`/api/stop`、`/api/status` |
+
+### 控制台（本地服务）
+
+```
+浏览器  ──HTTP──▶  127.0.0.1:8765（ThreadingHTTPServer，仅本机）
+                    ├─ GET  /                配置页（src/web 静态文件）
+                    ├─ GET  /api/config      读出 config.yaml
+                    ├─ POST /api/config      校验 + 原子写入
+                    ├─ POST /api/start       {"mode":"grab"|"poll"} → 线程里跑 Pipeline
+                    ├─ POST /api/stop        调 pipeline.stop()
+                    └─ GET  /api/status      状态 + 最近 120 行日志（环形缓冲）
+```
+
+- 只用标准库（`http.server`），不引入 Web 框架；
+- 启动的流程跑在 daemon 线程里，`Runner.stop()` 调 `pipeline.stop()` 中断；
+- 日志通过 `logging.Handler` 收进环形缓冲，页面每 2 秒轮询一次；
+- 静态打开（`file://`）时页面自动降级为只读预览，启停按钮提示"请用启动脚本打开控制台"。
 
 ---
 

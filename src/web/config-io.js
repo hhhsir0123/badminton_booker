@@ -196,7 +196,12 @@
         index += 1;
         if (entry[1] !== '') {
           map[key] = parseScalar(entry[1]);
-        } else if (index < lines.length && lines[index].indent > indent) {
+        } else if (index < lines.length
+          && (lines[index].indent > indent
+            || (lines[index].indent === indent && lines[index].content[0] === '-'))) {
+          // PyYAML 会把块序列写在和 key 同一个缩进上：
+          //   preferences:
+          //   - court: 任意
           map[key] = parseNode(lines[index].indent);
         } else {
           map[key] = null;
@@ -521,6 +526,12 @@
       }
       if (!CLOCK.test(String(item.end || ''))) {
         errors.push(label + '的结束时间需要 HH:MM');
+      }
+      if (CLOCK.test(String(item.start || '')) && !/:00$/.test(String(item.start))) {
+        errors.push(label + '的开始时间只支持整点（HH:00）');
+      }
+      if (CLOCK.test(String(item.end || '')) && !/:00$/.test(String(item.end))) {
+        errors.push(label + '的结束时间只支持整点（HH:00）');
       }
       if (CLOCK.test(String(item.start || '')) && CLOCK.test(String(item.end || '')) && item.start >= item.end) {
         errors.push(label + '的结束时间要晚于开始时间');

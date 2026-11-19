@@ -107,3 +107,30 @@ class VariantsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class _FakeImage:
+    def __init__(self, width, height, visible=True):
+        self.size = {"width": width, "height": height}
+        self._visible = visible
+
+    def is_displayed(self):
+        return self._visible
+
+
+class ImageSizeFilterTest(unittest.TestCase):
+    """验证码图片要按尺寸过滤：页面上的 16x16 图标不能被当成验证码。"""
+
+    def _solver(self):
+        from src.utils.captcha_solver import CaptchaSolver
+
+        return CaptchaSolver.__new__(CaptchaSolver)
+
+    def test_rejects_tiny_icon(self):
+        self.assertFalse(self._solver()._looks_like_captcha(_FakeImage(16, 16)))
+
+    def test_accepts_captcha(self):
+        self.assertTrue(self._solver()._looks_like_captcha(_FakeImage(80, 26)))
+
+    def test_rejects_hidden(self):
+        self.assertFalse(self._solver()._looks_like_captcha(_FakeImage(80, 26, visible=False)))

@@ -125,15 +125,41 @@ class CaptchaSolver:
                     continue
         return None
 
+    # 验证码图片通常是 80x26 左右；太小的多半是页面图标
+    MIN_WIDTH = 40
+    MIN_HEIGHT = 14
+
     def _image_element(self):
+        # 优先：验证码输入框所在表单项里的图片
+        field = self._input_element()
+        if field is not None:
+            try:
+                from selenium.webdriver.common.by import By
+
+                for element in field.find_elements(
+                    By.XPATH, "./ancestor::div[contains(@class,'ivu-form-item')][1]//img"
+                ):
+                    if self._looks_like_captcha(element):
+                        return element
+            except Exception:  # noqa: BLE001
+                pass
+
         for selector in IMAGE_SELECTORS:
             for element in self.driver.find_elements("css selector", selector):
-                try:
-                    if element.is_displayed() and element.size.get("width"):
-                        return element
-                except Exception:  # noqa: BLE001
-                    continue
+                if self._looks_like_captcha(element):
+                    return element
         return None
+
+    def _looks_like_captcha(self, element) -> bool:
+        try:
+            if not element.is_displayed():
+                return False
+            size = element.size or {}
+            width = int(size.get("width") or 0)
+            height = int(size.get("height") or 0)
+            return width >= self.MIN_WIDTH and height >= self.MIN_HEIGHT
+        except Exception:  # noqa: BLE001
+            return False
 
     def _click_hint(self) -> Optional[str]:
         try:

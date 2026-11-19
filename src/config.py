@@ -201,6 +201,10 @@ def validate_config(data: Dict[str, Any]) -> List[str]:
                 errors.append(f"第 {index} 条偏好的开始时间需要 HH:MM")
             if not isinstance(end, str) or not TIME_CLOCK.match(end):
                 errors.append(f"第 {index} 条偏好的结束时间需要 HH:MM")
+            if isinstance(start, str) and TIME_CLOCK.match(start) and not start.endswith(":00"):
+                errors.append(f"第 {index} 条偏好的开始时间只支持整点（HH:00）")
+            if isinstance(end, str) and TIME_CLOCK.match(end) and not end.endswith(":00"):
+                errors.append(f"第 {index} 条偏好的结束时间只支持整点（HH:00）")
             if isinstance(start, str) and isinstance(end, str) and TIME_CLOCK.match(start) and TIME_CLOCK.match(end):
                 if start >= end:
                     errors.append(f"第 {index} 条偏好的结束时间要晚于开始时间")
@@ -234,6 +238,49 @@ def validate_config(data: Dict[str, Any]) -> List[str]:
     secret = _get(data, "feishu.secret", "")
     if secret not in ("", None) and not isinstance(secret, str):
         errors.append("飞书 secret 应为字符串")
+
+    return errors
+
+
+PHONE_RE = re.compile(r"^1[3-9]\d{9}$")
+NAME_RE = re.compile(r"^[\u4e00-\u9fa5A-Za-z·\s]{2,20}$")
+
+
+def validate_for_run(data: Dict[str, Any]) -> List[str]:
+    """在 validate_config 之上，校验「真正能跑起来」需要的字段。
+
+    用于保存配置和启动任务：账号、同伴、验证码凭据缺失或格式错误要立刻报出来。
+    """
+    errors = list(validate_config(data))
+
+    username = str(_get(data, "user.username", "") or "").strip()
+    if not username:
+        errors.append("请填写登录手机号（系统设置 → 账号）")
+    elif not PHONE_RE.match(username):
+        errors.append("登录手机号应为 11 位手机号")
+
+    if not str(_get(data, "user.password", "") or ""):
+        errors.append("请填写登录密码（系统设置 → 账号）")
+
+    partner = str(_get(data, "user.partner_name", "") or "").strip()
+    if not partner:
+        errors.append("请填写默认同伴（系统设置 → 账号）")
+    elif not NAME_RE.match(partner):
+        errors.append("默认同伴姓名不合法（2~20 个中文/字母）")
+
+    provider = str(_get(data, "captcha.provider", "local") or "local").lower()
+    if provider not in ("local", "ttshitu"):
+        errors.append("验证码识别方式只能是 local 或 ttshitu")
+    elif provider == "ttshitu":
+        tts_user = str(_get(data, "captcha.ttshitu.username", "") or "").strip()
+        tts_pass = str(_get(data, "captcha.ttshitu.password", "") or "")
+        if not tts_user:
+            errors.append("选择图鉴打码时需要填写图鉴用户名")
+        if not tts_pass:
+            errors.append("选择图鉴打码时需要填写图鉴密码")
+        type_id = _get(data, "captcha.ttshitu.type_id", 43)
+        if not _is_int(type_id) or not 1 <= type_id <= 99:
+            errors.append("图鉴题型应为 1~99 的整数（推荐 43）")
 
     return errors
 
