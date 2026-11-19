@@ -80,6 +80,8 @@ class Runner:
         self.logs: deque = deque(maxlen=400)
         self.core: deque = deque(maxlen=200)
         self._stop_requested = False
+        self.closing = False
+        self._remaining_windows = []
         self._lock = threading.Lock()
         handler = _LogBuffer(self.logs, self.core)
         handler.setLevel(logging.INFO)
@@ -109,6 +111,8 @@ class Runner:
 
     def start(self, mode: str) -> tuple[bool, str]:
         with self._lock:
+            if self.closing:
+                return False, "控制台正在退出"
             if self.thread and self.thread.is_alive():
                 return False, "已经在运行了"
             config = Config(self.config_path)
@@ -127,33 +131,36 @@ class Runner:
             return True, "已启动"
 
     def stop(self) -> tuple[bool, str]:
-        pipeline = self.pipeline
-        if pipeline is None:
-            self.state = "idle"
-            self.message = "没有在运行"
-            return False, "没有在运行"
-        self._stop_requested = True
+        with self._lock:
+            if self.thread is None:
+                return False, "没有在运行"
+            self._stop_requested = True
+            pipeline = self.pipeline
         try:
-            pipeline.stop()
+            if pipeline is not None:
+                pipeline.stop()
         except Exception as error:  # noqa: BLE001
             logger.warning("停止失败: %s", error)
         self.message = "正在停止…"
         return True, "正在停止"
 
     def _run(self, mode: str):
+        pipeline = None
         try:
             if mode == "poll":
                 from ..pipeline.periodic_scanning_pipeline import PeriodicScanningPipeline
 
                 pipeline = PeriodicScanningPipeline(self.config_path)
-                self.pipeline = pipeline
-                ok = pipeline.run()
             else:
                 from ..pipeline.ticket_grabbing_pipeline import TicketGrabbingPipeline
 
                 pipeline = TicketGrabbingPipeline(self.config_path)
+            with self._lock:
                 self.pipeline = pipeline
-                ok = pipeline.run()
+                cancelled = self._stop_requested
+            if cancelled:
+                pipeline.stop()
+            ok = False if cancelled else pipeline.run()
             if self._stop_requested:
                 self.state = "stopped"
                 self.message = "已停止"
@@ -165,9 +172,35 @@ class Runner:
             self.state = "failed"
             self.message = f"异常：{error}"
         finally:
-            self.finished_at = time.time()
-            self.pipeline = None
-            self.thread = None
+            try:
+                if pipeline is not None and (self._stop_requested or self.closing):
+                    pipeline.cleanup()
+            finally:
+                with self._lock:
+                    browser = getattr(pipeline, "browser", None)
+                    if browser is not None:
+                        self._remaining_windows.append(browser)
+                    self.finished_at = time.time()
+                    self.pipeline = None
+                    self.thread = None
+
+    def begin_close(self):
+        with self._lock:
+            self.closing = True
+            thread = self.thread
+        self.stop()
+        return thread
+
+    def close(self):
+        thread = self.begin_close()
+        if thread is not None:
+            thread.join()
+        for browser in self._remaining_windows:
+            try:
+                browser.close()
+            except Exception as error:
+                logger.warning("关闭预约窗口失败: %s", error)
+        self._remaining_windows.clear()
 
 
 
@@ -183,12 +216,21 @@ class LoginChecker:
         self.config_path = config_path
         self.project_root = project_root
         self._lock = threading.Lock()
+        self._closing = threading.Event()
+
+    def close(self):
+        self._closing.set()
+        with self._lock:
+            pass  # The active login check owns its browser and closes it before releasing.
 
     def check(self, username: str, password: str) -> dict:
         if not username:
             return {"ok": False, "message": "请先填写登录手机号"}
         if not self._lock.acquire(blocking=False):
             return {"ok": False, "message": "上一次验证还在进行中，请稍等"}
+        if self._closing.is_set():
+            self._lock.release()
+            return {"ok": False, "message": "控制台正在退出"}
         started = time.monotonic()
         profile = ""
         temporary = False
@@ -306,6 +348,33 @@ def _handler_factory(runner: Runner, checker):
 
         def do_POST(self):
             path = urlparse(self.path).path
+            if path == "/api/shutdown":
+                port = self.server.server_port
+                allowed = {f"127.0.0.1:{port}", f"localhost:{port}"}
+                host = self.headers.get("Host", "")
+                if (host not in allowed or self.headers.get("Origin") != f"http://{host}"
+                        or self.headers.get("X-Booker-Action") != "shutdown"):
+                    self._json(403, {"ok": False, "error": "请从本机控制台退出程序"})
+                    return
+                with self.server.close_lock:
+                    first = not runner.closing
+                    runner.begin_close()
+                try:
+                    self._json(202, {"ok": True})
+                finally:
+                    if first:
+                        # The response acknowledges the request. Stop serving after cleanup.
+                        def finish():
+                            try:
+                                checker.close()
+                                runner.close()
+                            finally:
+                                self.server.shutdown()
+                        threading.Thread(target=finish, daemon=True).start()
+                return
+            if runner.closing:
+                self._json(409, {"ok": False, "error": "控制台正在退出"})
+                return
             if path == "/api/config":
                 payload = self._body()
                 text = str(payload.get("yaml") or "")
@@ -356,6 +425,7 @@ def serve(config_path: str, host: str = "127.0.0.1", port: int = 8765, open_brow
     project_root = os.path.dirname(os.path.dirname(WEB_DIR))
     checker = LoginChecker(config_path, project_root)
     httpd = ThreadingHTTPServer((host, port), _handler_factory(runner, checker))
+    httpd.close_lock = threading.Lock()
     url = f"http://{host}:{port}/"
     logger.info("配置控制台已启动：%s", url)
     if open_browser:
@@ -370,7 +440,8 @@ def serve(config_path: str, host: str = "127.0.0.1", port: int = 8765, open_brow
     except KeyboardInterrupt:
         logger.info("控制台已停止")
     finally:
-        runner.stop()
+        checker.close()
+        runner.close()
         httpd.server_close()
 
 
