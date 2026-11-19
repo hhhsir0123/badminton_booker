@@ -1,269 +1,205 @@
+"""流程基类：配置、浏览器生命周期、登录、场馆导航、公共筛选逻辑。
+
+相比旧版：
+- 构造时只读配置，不启动浏览器（Web 服务里可以先生成对象，到点再启动）；
+- 支持指定配置文件路径；
+- 浏览器用持久化 profile，抢场当天不需要重新登录；
+- _process_bookings 修正为「每个候选用自己的时段」，并按 BookingOutcome 判断。
 """
-基础流程模块
-提供羽毛球场馆预订的基础流程类
-"""
+from __future__ import annotations
+
 import os
-import time
-import traceback
+import threading
 from abc import ABC, abstractmethod
-from typing import Optional, List, Tuple, Dict
+from typing import Dict, List, Optional, Tuple
 
 from ..config import Config
+from ..core.booking_result import BookingOutcome
 from ..core.browser import BrowserManager
-from ..core.login import LoginManager
-from ..core.court_query import QueryManager
 from ..core.court_booking import BookingManager
-from ..utils.ocr import CaptchaRecognizer
+from ..core.court_query import QueryManager
+from ..core.login import LoginManager
 from ..utils.email_notifier import EmailNotifier
+from ..utils.captcha_solver import CaptchaSolver
+from ..utils.feishu_notifier import FeishuNotifier
 from ..utils.logger import setup_logger
+from ..utils.ocr import CaptchaRecognizer
 
 logger = setup_logger(__name__)
 
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 
 class BasePipeline(ABC):
-    """羽毛球场馆预订基础流程类
-    
-    提供登录、浏览器管理、场馆导航等基础功能
-    子类需要实现 run() 方法来定义具体的业务流程
-    """
-    
-    def __init__(self):
-        """初始化基础流程
-        
-        加载配置文件并初始化各个管理器组件:
-        - 浏览器管理器
-        - 登录管理器
-        - 查询管理器
-        - 预订管理器
-        - 验证码识别器
-        - 邮件通知器
-        """
-        self.logger = logger
-        
-        # 加载配置文件（修复路径解析问题）
-        logger.info("📄 加载配置文件...")
-        project_root = os.path.dirname(
-            os.path.dirname(
-                os.path.dirname(os.path.abspath(__file__))
-            )
-        )
-        config_path = os.path.join(project_root, "config.yaml")
-        self.config = Config(config_path)
-        
-        # 初始化浏览器管理器
-        self.browser = BrowserManager(
-            headless=self.config.get('login.headless', False)
-        )
-        
-        # 初始化查询和预订管理器
-        self.query_manager = QueryManager(self.browser)
-        self.booking_manager = BookingManager(self.browser, self.query_manager)
-        
-        # 初始化验证码识别器和登录管理器
-        self.captcha_recognizer = CaptchaRecognizer()
-        self.login_manager = LoginManager(self.browser, self.captcha_recognizer)
-        
-        # 初始化邮件通知器
-        self.email_notifier: Optional[EmailNotifier] = self._init_email_notifier()
-        
-        # 启动浏览器
-        logger.info("🌐 启动浏览器...")
-        self.browser.start()
-    
-    def _init_email_notifier(self) -> Optional[EmailNotifier]:
-        """初始化邮件通知器
-        
-        Returns:
-            EmailNotifier: 邮件通知器实例，如果配置不完整则返回 None
-        """
-        smtp_server = self.config.get('email.smtp_server')
-        sender_email = self.config.get('email.sender_email')
-        sender_password = self.config.get('email.sender_password')
-        
-        # 检查必需的邮件配置
-        if not all([smtp_server, sender_email, sender_password]):
-            logger.warning("⚠️  邮件配置不完整，邮件通知功能将不可用")
-            return None
-        
-        return EmailNotifier(
-            smtp_server=smtp_server,
-            smtp_port=self.config.get('email.smtp_port', 465),
-            sender_email=sender_email,
-            sender_password=sender_password,
-            use_ssl=self.config.get('email.use_ssl', True)
-        )
-    
-    def start_pipeline(self) -> bool:
-        """启动流程：登录并进入场馆页面
-        
-        执行以下步骤:
-        1. 使用配置的账号密码登录系统
-        2. 自动处理验证码（如果启用）
-        3. 导航到指定的场馆类型页面
-        4. 等待页面加载完成
-        
-        Returns:
-            bool: 流程是否启动成功
-        """
-        try:
-            # 执行登录
-            logger.info("🔐 开始登录...")
-            login_success = self.login_manager.login(
-                url=self.config.get('login.url'),
-                username=self.config.get('user.username'),
-                password=self.config.get('user.password'),
-                auto_captcha=self.config.get('login.auto_captcha', True),
-                max_retry=self.config.get('login.max_retry', 3)
-            )
-            
-            if not login_success:
-                logger.error("❌ 登录失败")
-                return False
-            
-            logger.info("✅ 登录成功！")
-            
-            # 导航到场馆页面
-            venue_type = self.config.get('booking.venue_type', '羽毛球')
-            logger.info(f"🏸 正在进入{venue_type}场馆...")
-            
-            if not self.login_manager.navigate_to_venue(venue_type):
-                logger.error(f"❌ 进入{venue_type}场馆失败")
-                return False
-            
-            # 等待弹窗消失（通常为5秒自动关闭）
-            wait_time = 10
-            logger.info(f"⏳ 等待页面加载完成（{wait_time}秒）...")
-            time.sleep(wait_time)
-            
-            logger.info("✅ 成功进入场馆页面，浏览器将保持打开...")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ 登录过程中发生异常: {e}", exc_info=True)
-            self.cleanup()
-            return False
-    
-    def cleanup(self):
-        """清理资源
-        
-        关闭浏览器并释放相关资源
-        """
-        try:
-            if hasattr(self, 'browser') and self.browser:
-                logger.info("🧹 清理资源，关闭浏览器...")
-                self.browser.close()
-        except Exception as e:
-            logger.error(f"清理资源时发生错误: {e}")
-    
-    @abstractmethod
-    def run(self) -> bool:
-        """执行完整流程（抽象方法）
-        
-        子类必须实现此方法来定义具体的业务流程
-        例如：定时轮询流程、抢票流程等
-        
-        Returns:
-            bool: 流程是否执行成功
-        """
-        pass
-    
-    def __enter__(self):
-        """上下文管理器入口"""
-        return self
-    
-    def __exit__(self, exc_type, exc_val, exc_tb):
-        """上下文管理器退出，自动清理资源"""
-        self.cleanup()
+    """场馆预订基础流程。"""
 
-    def _filter_valid_courts(self, 
-                            available_courts: Dict[str, List[str]],
-                            aim_time_slots: List[str] = []
-                            ) -> List[Tuple[str, List[str]]]:
-        """
-        筛选符合条件的场地
-        
-        Args:
-            available_courts: 所有可用场地
-            
-        Returns:
-            符合条件的场地列表 [(场地名, 时间段列表)]
-        """
-        valid_courts = []
-        
-        self.logger.info(f"🎯 筛选符合条件的场地（需包含时间段: {aim_time_slots}）")
-        
-        for court_name, available_times in available_courts.items():
-            # 检查是否所有目标时间段都可用
-            if self._check_time_slots_available(available_times, aim_time_slots):
-                valid_courts.append((court_name, available_times))
-                self.logger.info(f"  ✓ {court_name} 符合条件")
-        
-        if valid_courts:
-            self.logger.info(f"共找到 {len(valid_courts)} 个符合条件的场地")
-        
-        return valid_courts
-    
-    def _check_time_slots_available(self, available_times: List[str], aim_time_slots: List[str]= []) -> bool:
-        """
-        检查所有目标时间段是否都可用
-        
-        Args:
-            available_times: 可用时间段列表
-            
-        Returns:
-            是否所有目标时间段都可用
-        """
-        for target_slot in aim_time_slots:
-            if target_slot not in available_times:
-                return False
+    def __init__(self, config_path: Optional[str] = None):
+        self.logger = logger
+        self.project_root = PROJECT_ROOT
+        self.config_path = config_path or os.environ.get("BB_CONFIG") or os.path.join(PROJECT_ROOT, "config.yaml")
+        self.config = Config(self.config_path)
+        self.browser: Optional[BrowserManager] = None
+        self.query_manager: Optional[QueryManager] = None
+        self.booking_manager: Optional[BookingManager] = None
+        self.login_manager: Optional[LoginManager] = None
+        self.captcha_recognizer: Optional[CaptchaRecognizer] = None
+        self.captcha_solver: Optional[CaptchaSolver] = None
+        self.email_notifier: Optional[EmailNotifier] = self._init_email_notifier()
+        self.feishu_notifier: Optional[FeishuNotifier] = self._init_feishu_notifier()
+        self._stopped = threading.Event()
+        self.summary: Dict[str, object] = {}
+
+    # ------------------------------------------------------------- 生命周期
+
+    def _init_email_notifier(self) -> Optional[EmailNotifier]:
+        server = self.config.get("email.smtp_server")
+        sender = self.config.get("email.sender_email")
+        password = self.config.get("email.sender_password")
+        if not all([server, sender, password]):
+            return None
+        return EmailNotifier(
+            smtp_server=server,
+            smtp_port=self.config.get("email.smtp_port", 465),
+            sender_email=sender,
+            sender_password=password,
+            use_ssl=self.config.get("email.use_ssl", True),
+        )
+
+    def _init_feishu_notifier(self) -> Optional[FeishuNotifier]:
+        webhook = self.config.get("feishu.webhook", "")
+        if not webhook:
+            return None
+        notifier = FeishuNotifier(
+            webhook,
+            secret=self.config.get("feishu.secret", ""),
+            mention_all=bool(self.config.get("feishu.mention_all", False)),
+        )
+        if not notifier.enabled:
+            self.logger.warning("飞书 webhook 格式不对，通知已关闭: %s", webhook)
+            return None
+        self.logger.info("飞书通知已启用")
+        return notifier
+
+    def start(self) -> bool:
+        """启动浏览器与各管理器（幂等）。"""
+        if self.browser and self.browser.driver:
+            return True
+        try:
+            self.browser = BrowserManager(
+                headless=bool(self.config.get("login.headless", False)),
+                profile_dir=self.config.get("login.profile_dir", ".chrome-profile"),
+                project_root=self.project_root,
+            )
+            self.browser.start()
+            self.query_manager = QueryManager(self.browser)
+            self.captcha_recognizer = CaptchaRecognizer()
+            self.captcha_solver = CaptchaSolver(
+                self.browser,
+                self.captcha_recognizer,
+                max_attempts=int(self.config.get("captcha.max_attempts", 3)),
+                min_length=int(self.config.get("captcha.min_length", 4)),
+                max_length=int(self.config.get("captcha.max_length", 6)),
+                ensemble=bool(self.config.get("captcha.ensemble", True)),
+                slider_wait=float(self.config.get("captcha.slider_wait_seconds", 0) or 0),
+            )
+            self.booking_manager = BookingManager(self.browser, self.query_manager, self.captcha_solver)
+            self.login_manager = LoginManager(self.browser, self.captcha_recognizer, self.captcha_solver)
+            return True
+        except Exception as error:  # noqa: BLE001
+            self.logger.error("启动浏览器失败: %s", error, exc_info=True)
+            return False
+
+    def start_pipeline(self) -> bool:
+        """启动浏览器 → 恢复/执行登录 → 进入场馆页。"""
+        if not self.start():
+            return False
+        assert self.login_manager and self.query_manager
+        ok = self.login_manager.ensure_logged_in(
+            url=self.config.get("login.url"),
+            username=self.config.get("user.username"),
+            password=self.config.get("user.password"),
+            auto_captcha=bool(self.config.get("login.auto_captcha", True)),
+            max_retry=int(self.config.get("login.max_retry", 2)),
+        )
+        if not ok:
+            self.logger.error("登录失败")
+            return False
+
+        venue = self.config.get("booking.venue_type", "羽毛球")
+        if not self.login_manager.navigate_to_venue(venue):
+            self.logger.error("进入场馆失败")
+            return False
+
+        self.query_manager.install()
+        # 模型加载要 1~2 秒，必须在开售前完成，不能等到 07:00 第一次识别时再加载
+        try:
+            self.captcha_solver.warmup()
+        except Exception as error:  # noqa: BLE001
+            self.logger.warning("验证码预热失败: %s", error)
         return True
 
-    def _process_bookings(self, 
-                         valid_courts: List[Tuple[str, List[str]]],
-                         aim_time_slots: List[str] = [],
-                         is_click_parter: bool = False,
-                         partner_name: str = ""
-                         ) -> List[Tuple[str, List[str]]]:
-        """
-        处理预订（如果启用自动预订）
-        
-        Args:
-            valid_courts: 符合条件的场地列表
-            
-        Returns:
-            成功预订的场地列表
-        """
-        booked_courts = []
-        
-        self.logger.info("🎫 开始预订...")
-        
-        for court_name, time_slots in valid_courts:
-            self.logger.info(f"尝试预订: {court_name} - {aim_time_slots}")
-            
-            try:
-                booking_result = False
-                if is_click_parter:
-                    booking_result = self.booking_manager.book_court(
-                        court_name=court_name,
-                        time_slots=aim_time_slots,
-                        partner_names=[partner_name] if partner_name else [],
-                        is_click_parter=True
-                    )
-                else:
-                    booking_result = self.booking_manager.book_court(
-                        court_name=court_name,
-                        time_slots=aim_time_slots,
-                        partner_names=[]
-                    )
-                if booking_result:
-                    self.logger.info(f"  ✓ 预订成功: {court_name}")
-                    booked_courts.append((court_name, aim_time_slots))
-                    break  # 预订成功后停止
-                else:
-                    self.logger.warning(f"  ✗ 预订失败: {court_name}")
-                    
-            except Exception as e:
-                self.logger.error(f"  ❌ 预订出错: {court_name} - {e} {traceback.format_exc()}")
-        
-        return booked_courts
-    
+    def cleanup(self):
+        browser = getattr(self, "browser", None)
+        if browser:
+            browser.close()
+            self.browser = None
+
+    def stop(self):
+        self._stopped.set()
+
+    @property
+    def stopped(self) -> bool:
+        return self._stopped.is_set()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        self.cleanup()
+
+    @abstractmethod
+    def run(self) -> bool:
+        """执行一次完整任务。"""
+
+    # ------------------------------------------------------------- 公共逻辑
+
+    @staticmethod
+    def _filter_valid_courts(
+        available_courts: Dict[str, List[str]],
+        aim_time_slots: Optional[List[str]] = None,
+    ) -> List[Tuple[str, List[str]]]:
+        """筛选包含全部目标时段的场地。"""
+        aim_time_slots = aim_time_slots or []
+        valid = []
+        for court, times in available_courts.items():
+            if all(slot in times for slot in aim_time_slots):
+                valid.append((court, times))
+        return valid
+
+    def _process_bookings(
+        self,
+        valid_courts: List[Tuple[str, List[str]]],
+        aim_time_slots: Optional[List[str]] = None,
+        is_click_parter: bool = False,
+        partner_name: str = "",
+    ) -> List[Tuple[str, List[str]]]:
+        """按顺序尝试预订，成功后停止。"""
+        aim_time_slots = aim_time_slots or []
+        booked: List[Tuple[str, List[str]]] = []
+        partners = [partner_name] if partner_name else []
+
+        for court, times in valid_courts:
+            slots = [slot for slot in aim_time_slots if slot in times] or list(times)
+            outcome = self.booking_manager.book_court(
+                court_name=court,
+                time_slots=slots,
+                partner_names=partners if is_click_parter else [],
+                is_click_parter=bool(is_click_parter and partners),
+            )
+            if outcome is BookingOutcome.CREATED:
+                booked.append((court, slots))
+                break
+            if outcome is BookingOutcome.UNKNOWN:
+                self.logger.warning("提交结果不确定，停止自动重试，请人工核对")
+                break
+        return booked

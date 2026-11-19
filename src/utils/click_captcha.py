@@ -11,9 +11,8 @@ from typing import List, Tuple, Optional
 
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.action_chains import ActionChains
-from PIL import Image
-import ddddocr
 
+from .ocr import load_ddddocr
 from .logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -43,6 +42,7 @@ class ClickCaptchaHandler:
         
         try:
             # 初始化 ddddocr - 使用 beta 版本的点选功能
+            ddddocr = load_ddddocr()
             self.ocr = ddddocr.DdddOcr(det=False, ocr=True, show_ad=False)
             self.det = ddddocr.DdddOcr(det=True, show_ad=False)
             logger.info("✅ ddddocr 初始化成功")
@@ -166,6 +166,8 @@ class ClickCaptchaHandler:
                 return []
             
             # 步骤 2: 对每个检测框进行 OCR 识别
+            from PIL import Image
+
             img = Image.open(BytesIO(image_bytes))
             char_locations = []
             

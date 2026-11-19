@@ -1,0 +1,475 @@
+/* 羽毛球预约 · 静态配置页 */
+
+:root {
+  --bg: #f2f5f2;
+  --panel: #ffffff;
+  --ink: #16211c;
+  --muted: #61706a;
+  --line: #dde4df;
+  --accent: #14684a;
+  --accent-soft: #e3f0e9;
+  --danger: #b42318;
+  --danger-soft: #fdecea;
+  --warn: #8a5a00;
+  --warn-soft: #fdf3e2;
+  --radius: 14px;
+  --shadow: 0 1px 2px rgba(18, 38, 30, 0.06), 0 8px 24px rgba(18, 38, 30, 0.06);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 15px/1.55 "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2 {
+  margin: 0;
+  font-weight: 650;
+}
+
+h1 {
+  font-size: 20px;
+}
+
+h2 {
+  font-size: 15px;
+}
+
+p {
+  margin: 0;
+}
+
+code {
+  font: 12.5px/1.4 "Cascadia Mono", Consolas, monospace;
+  background: #eef2ef;
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+
+hr {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 22px 0;
+}
+
+/* ------------------------------------------------------------ 头部 */
+.mast {
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+}
+
+.mast-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 16px 24px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.brand p {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 2px;
+}
+
+.court-mark {
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background:
+    linear-gradient(90deg, transparent 46%, rgba(255, 255, 255, 0.75) 46%, rgba(255, 255, 255, 0.75) 54%, transparent 54%),
+    linear-gradient(0deg, transparent 46%, rgba(255, 255, 255, 0.75) 46%, rgba(255, 255, 255, 0.75) 54%, transparent 54%),
+    var(--accent);
+  box-shadow: inset 0 0 0 3px rgba(255, 255, 255, 0.55);
+}
+
+.time-zone {
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.time-zone b {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+/* ------------------------------------------------------------ 布局 */
+main {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 24px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 20px;
+  align-items: start;
+}
+
+aside {
+  display: grid;
+  gap: 20px;
+  position: sticky;
+  top: 24px;
+}
+
+@media (max-width: 1000px) {
+  main {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  aside {
+    position: static;
+  }
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 20px;
+}
+
+/* ------------------------------------------------------------ 表单 */
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.section-head p {
+  color: var(--muted);
+  font-size: 13px;
+  margin-top: 2px;
+}
+
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 14px;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+label small {
+  color: #8a968f;
+  font-size: 11.5px;
+}
+
+input,
+button {
+  font: inherit;
+}
+
+input[type="text"],
+input[type="tel"],
+input[type="password"],
+input[type="date"],
+input[type="time"],
+input[type="number"],
+select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: #fbfcfb;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+  background: #fff;
+}
+
+label.switch {
+  flex-direction: row;
+  align-items: center;
+  gap: 9px;
+  align-self: end;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+}
+
+label.wide {
+  grid-column: 1 / -1;
+}
+
+input[type="checkbox"] {
+  accent-color: var(--accent);
+}
+
+/* ------------------------------------------------------------ 候选行 */
+#preferences {
+  display: grid;
+  gap: 10px;
+}
+
+.pref-row {
+  display: grid;
+  grid-template-columns: 28px minmax(120px, 1.6fr) minmax(96px, 1fr) minmax(96px, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fafcfb;
+}
+
+.pref-row label {
+  gap: 4px;
+}
+
+.rank {
+  align-self: center;
+  justify-self: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 700;
+  display: grid;
+  place-items: center;
+}
+
+.row-actions {
+  display: flex;
+  gap: 4px;
+}
+
+.row-actions button {
+  width: 30px;
+  height: 32px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--muted);
+  border-radius: 8px;
+  cursor: pointer;
+  line-height: 1;
+}
+
+.row-actions button:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+@media (max-width: 640px) {
+  .pref-row {
+    grid-template-columns: 24px 1fr 1fr;
+  }
+
+  .pref-row .court-field {
+    grid-column: 2 / 4;
+  }
+
+  .row-actions {
+    grid-column: 1 / 4;
+    justify-content: flex-end;
+  }
+}
+
+/* ------------------------------------------------------------ 高级 */
+details.advanced {
+  border: 1px dashed var(--line);
+  border-radius: 11px;
+  padding: 12px 14px;
+}
+
+details.advanced summary,
+details.preview-panel summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+details.advanced[open] summary {
+  margin-bottom: 14px;
+}
+
+/* ------------------------------------------------------------ 按钮 */
+button {
+  border-radius: 9px;
+  cursor: pointer;
+  padding: 9px 16px;
+  border: 1px solid transparent;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+button.primary {
+  background: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+button.primary:hover {
+  background: #0f5339;
+}
+
+button.secondary {
+  background: #fff;
+  border-color: var(--line);
+  color: var(--ink);
+}
+
+button.secondary:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* ------------------------------------------------------------ 右侧面板 */
+.state {
+  font-size: 12.5px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 999px;
+  background: #eef2f0;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.state[data-state="ok"] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.state[data-state="dirty"] {
+  background: var(--warn-soft);
+  color: var(--warn);
+}
+
+.state[data-state="error"] {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+
+.hint {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin-bottom: 12px;
+}
+
+.stack-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.steps {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--muted);
+  font-size: 13px;
+  display: grid;
+  gap: 8px;
+}
+
+.steps code {
+  background: #eef2ef;
+}
+
+.preview-panel pre {
+  margin: 12px 0 0;
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px;
+  background: #0f1a15;
+  color: #b9d8c7;
+  border-radius: 10px;
+  font: 12px/1.6 "Cascadia Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* ------------------------------------------------------------ 反馈 */
+.feedback {
+  margin-top: 14px;
+  font-size: 13px;
+  min-height: 1.2em;
+  color: var(--muted);
+}
+
+.feedback.ok {
+  color: var(--accent);
+}
+
+.feedback.error {
+  color: var(--danger);
+}
+
+.feedback.warn {
+  color: var(--warn);
+}
+
+
+/* ------------------------------------------------------------ 新版：分区与验证码 */
+details.advanced .section-head {
+  margin-top: 14px;
+}
+
+details.advanced .section-head:first-of-type {
+  margin-top: 4px;
+}
+
+details.advanced h3 {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--ink);
+}
+
+details.advanced .section-head p {
+  color: var(--muted);
+  font-size: 12.5px;
+  margin: 2px 0 0;
+}
+
+summary .muted {
+  color: var(--muted);
+  font-weight: 400;
+}
+
+#tts-block {
+  margin-top: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 11px;
+  background: #fafcfa;
+}
+
+#tts-block[hidden] {
+  display: none;
+}

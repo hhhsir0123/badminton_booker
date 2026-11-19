@@ -1,467 +1,230 @@
+"""下单模块：选场 → 选同伴 → 提交 → 判定回执。
+
+和旧版的区别：
+- 用一次 JS 调用来点多个场格，不再每个格子 sleep 1 秒、再点 3 种备选方式；
+- 返回 BookingOutcome，不再「点了提交就返回 True」；
+- 提交只执行一次，结果不确定时返回 UNKNOWN，交给人工核对，避免重复下单。
 """
-预订模块
-"""
+from __future__ import annotations
+
 import time
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import NoSuchElementException, TimeoutException, ElementClickInterceptedException
-from typing import List, Dict, Optional
-from .browser import BrowserManager
+from datetime import datetime
+from typing import Dict, List, Optional
+
+from .booking_result import BookingOutcome
 from .court_query import QueryManager
+from .page_js import AWAIT_OUTCOME_JS, SELECT_CELLS_JS, SUBMIT_JS
 from ..utils.logger import setup_logger
-from ..utils.click_captcha import ClickCaptchaHandler
 
 logger = setup_logger(__name__)
+
+FAILURE_HINTS = ("失败", "已被", "已售", "库存不足", "不可预约", "频繁", "超时", "已过期", "请勿重复", "无库存")
+SUCCESS_HINTS = ("成功", "已生成", "待支付", "去支付", "订单号", "下单")
 
 
 class BookingManager:
     """预订管理器"""
-    
-    def __init__(self, browser: BrowserManager, query: QueryManager):
-        """
-        初始化预订管理器
-        
-        Args:
-            browser: 浏览器管理器
-            query: 查询管理器
-        """
+
+    def __init__(self, browser, query: QueryManager, captcha_solver=None):
         self.browser = browser
         self.query = query
-        self.captcha_handler = ClickCaptchaHandler(browser)
-    
-    def book_court(self, court_name: str, time_slots: list, partner_names: list, is_click_parter: bool=False) -> bool:
-        # step1：点击可用的court
-        for time_slot in time_slots:
-            success = self.__click_court(court_name, time_slot)
-            if success:
-                logger.info(f"成功预订 {court_name} 的 {time_slot} 时间段")
+        self.captcha_solver = captcha_solver
+        self.background_clicks = True
+
+    @property
+    def driver(self):
+        return self.browser.driver
+
+    # ------------------------------------------------------------- 选择
+
+    def select_slots(self, court: str, slots: List[str]) -> Dict:
+        """点击场格。返回 {status: 'selected'|'partial'|'unavailable'|'error', detail}。"""
+        # 有些平台要求先过验证码才能占场
+        if self.captcha_solver is not None:
+            try:
+                if not self.captcha_solver.solve():
+                    logger.error("占场验证码未通过，放弃本次选场")
+                    return {"status": "error", "detail": "captcha"}
+            except Exception as error:  # noqa: BLE001
+                logger.warning("占场验证码处理异常: %s", error)
+
+        if not self.query.ensure_visible(court):
+            logger.warning("场地 %s 不在当前页且翻页未找到", court)
+            return {"status": "unavailable", "detail": "court-not-found"}
+
+        targets = [{"court": court, "slot": slot} for slot in slots]
+        payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets) or {}
+        if not payload.get("ok") and payload.get("error") == "no-helpers":
+            self.query.install()
+            payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets) or {}
+
+        results = payload.get("results") or []
+        selected, failed = [], []
+        for item in results:
+            if item.get("ok") and (item.get("changed") or "selected" in (item.get("classes") or [])):
+                selected.append(item.get("slot"))
+            elif item.get("ok") and item.get("changed") is False:
+                # 没变化也可能是「已经是选中态」，再看一眼 class
+                failed.append(item)
             else:
-                logger.warning(f"预订 {court_name} 的 {time_slot} 时间段失败，尝试下一个时间段")
-        # step2: 选择同伴
-        if is_click_parter:
-            self.click_partner(partner_names[0])  # 仅选择第一个同伴作为示例
-        # Step3：点击提交
-        self.__click_submit()
-        # step4: 处理点击类的验证码
-        if self.captcha_handler._check_click_captcha_exists():
-            logger.info("检测到验证码，开始处理...")
-            if not self.captcha_handler.handle_click_captcha():
-                logger.error("验证码处理失败")
-                return False
-        return True
+                failed.append(item)
 
-    def __click_submit(self) -> bool:
-        """
-        点击提交按钮
-                
-        Returns:
-            是否成功提交
-        """
-        logger.info("尝试点击提交按钮")
-
-        try:
-            # 等待提交按钮加载
-            time.sleep(1)
-            
-            # 查找submit_order_box容器
-            submit_box = self.browser.driver.find_element(
-                By.CSS_SELECTOR,
-                "div.submit_order_box.pc"
+        if failed and not selected:
+            # 有些前端选中后不会改场格 class，而是把提交按钮点亮。
+            # 用「提交按钮是否可用」兜底，避免把已选中的场次误判为不可用。
+            if self._submit_ready():
+                logger.info("场格 class 没有变化，但提交按钮已可用，按已选中处理")
+                return {"status": "selected", "detail": []}
+            detail = failed[0].get("error") or ",".join(
+                item.get("slot", "?") for item in failed
             )
-            
-            # 查找提交按钮
-            submit_button = submit_box.find_element(By.CSS_SELECTOR, "div.btn")
-            
-            # 检查按钮是否可点击（可能有disabled状态）
-            button_class = submit_button.get_attribute("class")
-            if "disabled" in button_class:
-                logger.warning("提交按钮处于禁用状态")
-                return False
-            
-            # 尝试点击提交按钮
-            click_success = False
-            
-            # 方式1: 直接点击
-            try:
-                self.browser.driver.execute_script(
-                    "arguments[0].scrollIntoView({block: 'center'});", 
-                    submit_button
-                )
-                time.sleep(0.3)
-                submit_button.click()
-                logger.info("成功点击提交按钮（方式1：直接点击）")
-                click_success = True
-            except ElementClickInterceptedException as e:
-                logger.debug(f"方式1点击失败（被遮挡）: {e}")
-            except Exception as e:
-                logger.debug(f"方式1点击失败: {e}")
-            
-            # 方式2: JavaScript点击
-            if not click_success:
-                try:
-                    self.browser.driver.execute_script("arguments[0].click();", submit_button)
-                    logger.info("成功点击提交按钮（方式2：JavaScript）")
-                    click_success = True
-                except Exception as e:
-                    logger.debug(f"方式2点击失败: {e}")
-            
-            if not click_success:
-                logger.error("所有点击方式都失败")
-                self.browser.driver.save_screenshot("submit_click_failed.png")
-                return False
-            
-            # 等待提交响应
-            time.sleep(2)
-            
-            # 检查提交结果（可以根据页面跳转、成功提示等判断）
-            try:
-                # 检查是否有成功提示
-                success_indicators = [
-                    "div.success-message",
-                    "div.ivu-message-success",
-                    "div.ant-message-success"
-                ]
-                
-                for selector in success_indicators:
-                    elements = self.browser.driver.find_elements(By.CSS_SELECTOR, selector)
-                    for element in elements:
-                        if element.is_displayed():
-                            logger.info("检测到提交成功提示")
-                            return True
-            except Exception as e:
-                logger.debug(f"检查成功提示时出错: {e}")
-            
-            logger.info("提交按钮已点击")
+            logger.warning("选中失败: %s", detail)
+            return {"status": "unavailable", "detail": detail}
+        if failed:
+            logger.warning("部分场格没有选中: %s", [item.get("slot") for item in failed])
+            return {"status": "partial", "detail": selected, "failed": failed}
+        return {"status": "selected", "detail": selected}
+
+    def _submit_ready(self) -> bool:
+        try:
+            return bool(self.driver.execute_script(
+                """
+                const scope = document.querySelector('.submit_order_box.pc')
+                    || document.querySelector('.submit_order_box');
+                if (!scope) { return false; }
+                const button = scope.querySelector('.btn') || scope.querySelector('button');
+                if (!button) { return false; }
+                return String(button.className || '').indexOf('disabled') < 0;
+                """
+            ))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def click_partner(self, partner_names: List[str]) -> bool:
+        """选择同行人；失败不阻断下单，只记录。"""
+        names = [name.strip() for name in partner_names if name and name.strip()]
+        if not names:
             return True
-        except NoSuchElementException:
-            logger.error("未找到提交按钮")
-            self.browser.driver.save_screenshot("submit_button_not_found.png")
-            return False
-        except Exception as e:
-            logger.error(f"点击提交按钮失败: {e}", exc_info=True)
-            self.browser.driver.save_screenshot("submit_error.png")
-            return False
-                            
-    def click_partner(self, partner_name: str) -> bool:
-        """
-        点击同伴按钮
-                
-        Args:
-            partner_name: 同伴名称
-                    
-        Returns:
-            是否成功点击
-        """
-        logger.info(f"尝试选择同伴: {partner_name}")
+        result = self.driver.execute_script(
+            """
+            const [names] = arguments;
+            const visible = e => e && e.getClientRects().length;
+            const rows = [...document.querySelectorAll('.buddy-box .buddy-row')].filter(visible);
+            const clicked = [];
+            for (const name of names) {
+                const row = rows.find(r => (r.innerText || '').indexOf(name) >= 0);
+                if (!row) { continue; }
+                row.click();
+                clicked.push(name);
+            }
+            return { clicked: clicked, total: rows.length };
+            """,
+            names,
+        ) or {}
+        clicked = result.get("clicked") or []
+        missing = [name for name in names if name not in clicked]
+        if missing:
+            logger.warning("未找到同伴: %s（页面共 %s 行）", missing, result.get("total"))
+        else:
+            logger.info("已选择同伴: %s", clicked)
+        return not missing
 
+    # ------------------------------------------------------------- 提交
+
+    def submit(self, timeout_ms: int = 6000) -> Dict:
+        return self.driver.execute_async_script(SUBMIT_JS, int(timeout_ms)) or {
+            "ok": False, "reason": "no-result"
+        }
+
+    def _verdict(self, payload: Dict) -> BookingOutcome:
+        reason = payload.get("reason")
+        message = str(payload.get("message") or "")
+
+        if payload.get("ok"):
+            logger.info("平台回执: %s %s", reason, message)
+            return BookingOutcome.CREATED
+
+        if reason == "toast":
+            if any(hint in message for hint in FAILURE_HINTS):
+                logger.warning("平台拒绝: %s", message)
+                return BookingOutcome.REJECTED
+            if any(hint in message for hint in SUCCESS_HINTS):
+                return BookingOutcome.CREATED
+
+        if reason == "submit-disabled":
+            return BookingOutcome.UNAVAILABLE
+        if reason in ("no-submit-box", "no-submit-button"):
+            # 可能已经跳转到订单页
+            if any(token in self.driver.current_url.lower() for token in ("order", "pay")):
+                return BookingOutcome.CREATED
+            return BookingOutcome.UNKNOWN
+        if reason == "navigated":
+            return BookingOutcome.CREATED
+        return BookingOutcome.UNKNOWN
+
+    # ------------------------------------------------------------- 主流程
+
+    def book_court(
+        self,
+        court_name: str,
+        time_slots: List[str],
+        partner_names: Optional[List[str]] = None,
+        is_click_parter: bool = False,
+        submit_timeout_ms: int = 6000,
+        allow_partial: bool = False,
+    ) -> BookingOutcome:
+        """提交一次预约，返回平台回执判定。"""
+        partner_names = partner_names or []
+        logger.info("尝试预订 %s %s", court_name, ", ".join(time_slots))
+
+        selection = self.select_slots(court_name, time_slots)
+        if selection["status"] == "error":
+            logger.warning("选场阶段出错（%s），不提交订单", selection.get("detail"))
+            return BookingOutcome.UNKNOWN
+        if selection["status"] == "unavailable":
+            logger.info("场格不可用（%s），换下一个候选", selection.get("detail"))
+            return BookingOutcome.UNAVAILABLE
+        if selection["status"] == "partial" and not allow_partial:
+            logger.info("只选中部分时段且未开启 allow_partial，换下一个候选")
+            return BookingOutcome.UNAVAILABLE
+
+        if not self.background_clicks:
+            # 保留一个显式等待的钩子，方便需要人工确认弹窗的场景
+            time.sleep(0.2)
+
+        if is_click_parter or partner_names:
+            self.click_partner(partner_names)
+
+        payload = self.submit(submit_timeout_ms)
+        if payload.get("reason") == "captcha":
+            payload = self._solve_captcha_and_wait(submit_timeout_ms)
+        outcome = self._verdict(payload)
+        if outcome is BookingOutcome.UNKNOWN:
+            self._snapshot_unknown()
+        return outcome
+
+    def _solve_captcha_and_wait(self, timeout_ms: int) -> Dict:
+        """提交后弹出点选验证码：识别 → 点击 → 回到「只观察结果」，绝不重复提交。"""
+        logger.info("提交后出现点选验证码，开始识别（首次加载模型约 1~2 秒）")
         try:
-            # 等待buddy-box加载
-            time.sleep(1)
-            
-            # 查找buddy-box容器
-            buddy_box = self.browser.driver.find_element(
-                By.CSS_SELECTOR,
-                "div.buddy-box"
-            )
-            
-            # 查找所有buddy-row
-            buddy_rows = buddy_box.find_elements(By.CSS_SELECTOR, "div.buddy-row")
-            
-            for row in buddy_rows:
-                try:
-                    # 获取该行的文本内容
-                    row_text = row.text.strip()
-                    logger.debug(f"检查同伴行: {row_text}")
-                    
-                    # 检查是否匹配同伴名称
-                    if partner_name in row_text:
-                        # 尝试点击该行（可能整行可点击）
-                        try:
-                            self.browser.driver.execute_script(
-                                "arguments[0].scrollIntoView({block: 'center'});", 
-                                row
-                            )
-                            time.sleep(0.3)
-                            row.click()
-                            logger.info(f"成功选择同伴: {partner_name}")
-                            return True
-                        except Exception as e:
-                            logger.debug(f"点击行失败，尝试查找按钮: {e}")
-                            
-                            # 查找行内的按钮或可点击元素
-                            clickable_elements = row.find_elements(
-                                By.CSS_SELECTOR,
-                                "button, div[onclick], span[onclick], a"
-                            )
-                            
-                            for element in clickable_elements:
-                                try:
-                                    self.browser.driver.execute_script(
-                                        "arguments[0].scrollIntoView({block: 'center'});",
-                                        element
-                                    )
-                                    time.sleep(0.3)
-                                    element.click()
-                                    logger.info(f"成功选择同伴: {partner_name}")
-                                    return True
-                                except Exception as e2:
-                                    logger.debug(f"点击元素失败: {e2}")
-                                    continue
-                except Exception as e:
-                    logger.debug(f"处理同伴行时出错: {e}")
-                    continue
-            
-            logger.warning(f"未找到同伴: {partner_name}")
-            return False
-            
-        except NoSuchElementException:
-            logger.error("未找到buddy-box元素")
-            self.browser.driver.save_screenshot("buddy_box_not_found.png")
-            return False
-        except Exception as e:
-            logger.error(f"选择同伴失败: {e}", exc_info=True)
-            self.browser.driver.save_screenshot("partner_click_error.png")
-            return False
-                
-    def __click_court(self, court_name: str, time_slot: str) -> bool:
-        """
-        预订场地
-        
-        Args:
-            court_name: 场地名称（如"训练馆3号"）
-            time_slot: 时间段（如"08:00-09:00"）
-            
-        Returns:
-            是否成功点击预订按钮
-        """
-        logger.info(f"尝试预订: {court_name}, {time_slot}")
-        
+            from ..utils.click_captcha import ClickCaptchaHandler
+
+            handler = ClickCaptchaHandler(self.browser)
+            if not handler.handle_click_captcha():
+                return {"ok": False, "reason": "captcha", "message": "验证码处理失败"}
+            logger.info("验证码已通过，继续等待提交回执")
+            return self.driver.execute_async_script(AWAIT_OUTCOME_JS, int(timeout_ms), "") or {
+                "ok": False, "reason": "no-result"
+            }
+        except Exception as error:  # noqa: BLE001
+            logger.error("验证码处理异常: %s", error, exc_info=True)
+            return {"ok": False, "reason": "captcha", "message": str(error)}
+
+    def _snapshot_unknown(self):
         try:
-            # 等待表格加载
-            time.sleep(1)
-            
-            # 查找表格
-            table = self.browser.driver.find_element(
-                By.CSS_SELECTOR, 
-                "div.spaceTable table[data-v-6fb750cc]"
-            )
-            
-            # 1. 找到场地名称对应的列索引
-            court_column_index = self._find_court_column_index(table, court_name)
-            if court_column_index is None:
-                logger.error(f"未找到场地: {court_name}")
-                return False
-            
-            logger.info(f"场地 '{court_name}' 位于第 {court_column_index} 列")
-            
-            # 2. 找到时间段对应的行
-            target_row = self._find_time_slot_row(table, time_slot)
-            if target_row is None:
-                logger.error(f"未找到时间段: {time_slot}")
-                return False
-            
-            logger.info(f"时间段 '{time_slot}' 找到对应行")
-            
-            # 3. 定位到具体的单元格
-            cells = target_row.find_elements(By.TAG_NAME, "td")
-            if court_column_index >= len(cells):
-                logger.error(f"列索引超出范围: {court_column_index} >= {len(cells)}")
-                return False
-            
-            target_cell = cells[court_column_index]
-            
-            # 4. 检查是否可预订（是否为"free"状态）
-            try:
-                status_div = target_cell.find_element(By.CSS_SELECTOR, "div.reserveBlock")
-                class_attr = status_div.get_attribute("class")
-                
-                if "reserved" in class_attr:
-                    logger.warning(f"{court_name} 在 {time_slot} 已被预订")
-                    return False
-                
-                if "free" not in class_attr:
-                    logger.warning(f"{court_name} 在 {time_slot} 状态未知: {class_attr}")
-                    return False
-                
-                logger.info(f"场地可预订，准备点击...")
-                
-                # 5. 点击预订按钮
-                # 尝试多种方式点击
-                click_success = False
-                
-                # 方式1: 点击整个div
-                try:
-                    self.browser.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", status_div)
-                    time.sleep(0.3)
-                    status_div.click()
-                    logger.info("成功点击预订按钮（方式1：点击div）")
-                    click_success = True
-                except Exception as e:
-                    logger.debug(f"方式1点击失败: {e}")
-                
-                # 方式2: JavaScript点击
-                if not click_success:
-                    try:
-                        self.browser.driver.execute_script("arguments[0].click();", status_div)
-                        logger.info("成功点击预订按钮（方式2：JavaScript）")
-                        click_success = True
-                    except Exception as e:
-                        logger.debug(f"方式2点击失败: {e}")
-                
-                # 方式3: 点击单元格
-                if not click_success:
-                    try:
-                        self.browser.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", target_cell)
-                        time.sleep(0.3)
-                        target_cell.click()
-                        logger.info("成功点击预订按钮（方式3：点击单元格）")
-                        click_success = True
-                    except Exception as e:
-                        logger.debug(f"方式3点击失败: {e}")
-                
-                if not click_success:
-                    logger.error("所有点击方式都失败")
-                    self.browser.driver.save_screenshot("click_failed.png")
-                    return False
-                
-                # 6. 等待页面响应
-                time.sleep(2)
-                
-                # 7. 检查是否弹出预订确认框或跳转到预订页面
-                # TODO: 根据实际页面行为，可能需要处理弹窗、确认等
-                current_url = self.browser.driver.current_url
-                logger.info(f"点击后URL: {current_url}")
-                
-                # 检查是否有弹窗
-                try:
-                    # 可能的弹窗选择器
-                    modal_selectors = [
-                        "div.ivu-modal",
-                        "div.ant-modal",
-                        "div.el-dialog",
-                        "div[role='dialog']"
-                    ]
-                    
-                    for selector in modal_selectors:
-                        modals = self.browser.driver.find_elements(By.CSS_SELECTOR, selector)
-                        for modal in modals:
-                            if modal.is_displayed():
-                                logger.info(f"检测到弹窗: {selector}")
-                                # 这里可以添加确认预订的逻辑
-                                # 例如：点击"确认"按钮
-                                break
-                except Exception as e:
-                    logger.debug(f"检查弹窗时出错: {e}")
-                
-                logger.info(f"成功点击 {court_name} 的 {time_slot} 时间段")
-                return True
-                
-            except NoSuchElementException:
-                logger.error(f"未找到状态元素")
-                return False
-            
-        except NoSuchElementException as e:
-            logger.error(f"未找到表格元素: {e}")
-            self.browser.driver.save_screenshot("table_not_found.png")
-            return False
-        except Exception as e:
-            logger.error(f"预订失败: {e}", exc_info=True)
-            self.browser.driver.save_screenshot("booking_error.png")
-            return False
-    
-    def _find_court_column_index(self, table, court_name: str) -> Optional[int]:
-        """
-        查找场地名称对应的列索引
-        
-        Args:
-            table: 表格元素
-            court_name: 场地名称
-            
-        Returns:
-            列索引（从0开始，0是时间列），如果未找到返回None
-        """
-        try:
-            header_cells = table.find_elements(By.XPATH, ".//thead//td")
-            
-            for idx, cell in enumerate(header_cells):
-                cell_text = cell.text.strip()
-                # 移除可能的箭头符号
-                cell_text = cell_text.replace('→', '').strip()
-                
-                logger.debug(f"列 {idx}: {cell_text}")
-                
-                # 完全匹配或包含匹配
-                if cell_text == court_name or court_name in cell_text:
-                    return idx
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"查找列索引失败: {e}")
-            return None
-    
-    def _find_time_slot_row(self, table, time_slot: str) -> Optional:
-        """
-        查找时间段对应的行元素
-        
-        Args:
-            table: 表格元素
-            time_slot: 时间段（如"08:00-09:00"）
-            
-        Returns:
-            行元素，如果未找到返回None
-        """
-        try:
-            rows = table.find_elements(By.XPATH, ".//tbody/tr")
-            
-            for row in rows:
-                # 获取第一个单元格（时间段）
-                first_cell = row.find_element(By.TAG_NAME, "td")
-                row_time_slot = first_cell.text.strip()
-                
-                logger.debug(f"检查行: {row_time_slot}")
-                
-                # 完全匹配
-                if row_time_slot == time_slot:
-                    return row
-                
-                # 宽松匹配（去除空格）
-                if row_time_slot.replace(' ', '') == time_slot.replace(' ', ''):
-                    return row
-            
-            return None
-            
-        except Exception as e:
-            logger.error(f"查找时间段行失败: {e}")
-            return None
-    
-    def auto_book(self, venue_type: str, date: str, time_slots: List[str], 
-                  preferred_courts: List[int]) -> bool:
-        """
-        自动预订（按优先级尝试）
-        
-        Args:
-            venue_type: 场地类型
-            date: 日期
-            time_slots: 时间段列表（按优先级排序）
-            preferred_courts: 优先场地编号列表
-            
-        Returns:
-            是否预订成功
-        """
-        for time_slot in time_slots:
-            available_courts = self.query.query_available_courts(venue_type, date, time_slot)
-            
-            # 按优先级尝试预订
-            for court_num in preferred_courts:
-                if any(court['number'] == court_num for court in available_courts):
-                    if self.book_court(venue_type, date, time_slot, court_num):
-                        return True
-            
-            # 如果优先场地都不可用，尝试其他可用场地
-            for court in available_courts:
-                if self.book_court(venue_type, date, time_slot, court['number']):
-                    return True
-        
-        logger.warning("所有时间段和场地都预订失败")
-        return False
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            path = f"logs/unknown_{stamp}.png"
+            self.driver.save_screenshot(path)
+            logger.warning("提交结果不确定，已截图: %s（请在浏览器里核对订单）", path)
+        except Exception as error:  # noqa: BLE001
+            logger.debug("保存截图失败: %s", error)
