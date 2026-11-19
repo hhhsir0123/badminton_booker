@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 logs/
+verification/
 config.yaml
 .chrome-profile/
 .config-*.yaml

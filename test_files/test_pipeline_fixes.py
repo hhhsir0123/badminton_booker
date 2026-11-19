@@ -133,3 +133,29 @@ class GrabWindowTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class StaticGuardTest(unittest.TestCase):
+    """防止「构造函数参数对不上」「同步脚本里用 done」这类只在真机才炸的问题。"""
+
+    def test_pipeline_passes_only_supported_solver_kwargs(self):
+        import inspect
+
+        from src.pipeline.base_pipeline import BasePipeline
+        from src.utils.captcha_solver import CaptchaSolver
+
+        params = inspect.signature(CaptchaSolver.__init__).parameters
+        source = inspect.getsource(BasePipeline.start)
+        for name in ("max_attempts", "min_length", "max_length", "ensemble"):
+            self.assertIn(name, params, name)
+        self.assertNotIn("slider_wait", source)
+        self.assertNotIn("slider_wait", params)
+
+    def test_pagination_script_is_synchronous(self):
+        import inspect
+
+        from src.core.court_query import QueryManager
+
+        source = inspect.getsource(QueryManager._turn)
+        # 分页箭头是用 execute_script 调的，脚本里不能出现 async 的 done 回调
+        self.assertNotIn("done", source)
+

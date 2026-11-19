@@ -84,7 +84,6 @@ class BasePipeline(ABC):
                 min_length=int(self.config.get("captcha.min_length", 4)),
                 max_length=int(self.config.get("captcha.max_length", 6)),
                 ensemble=bool(self.config.get("captcha.ensemble", True)),
-                slider_wait=float(self.config.get("captcha.slider_wait_seconds", 0) or 0),
             )
             self.booking_manager = BookingManager(self.browser, self.query_manager, self.captcha_solver)
             self.login_manager = LoginManager(self.browser, self.captcha_recognizer, self.captcha_solver)
