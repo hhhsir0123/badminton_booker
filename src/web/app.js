@@ -342,6 +342,18 @@ async function detectApi() {
   try {
     applyStatus(await api('/api/status'));
     apiReady = true;
+    // 控制台模式下，以服务端的 config.yaml 为准（页面不能从空白默认值开始）
+    try {
+      const data = await api('/api/config');
+      if (data.yaml) {
+        state.config = IO.normalize(IO.parse(data.yaml));
+        state.sourceName = 'config.yaml';
+        render();
+        setStatus('已载入', 'ok');
+      }
+    } catch (error) {
+      /* 读不到就沿用默认值，不阻塞启停 */
+    }
     setInterval(refreshStatus, 2000);
   } catch (error) {
     apiReady = false;
@@ -377,11 +389,7 @@ async function startRun(mode) {
   }
   if (!validateOrReport()) return;
   try {
-    await api('/api/config', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ yaml: IO.emit(state.config) })
-    });
+    // 不自动保存：改完请先点「保存配置到程序」，避免把没加载完的默认值写进去
     const result = await api('/api/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
