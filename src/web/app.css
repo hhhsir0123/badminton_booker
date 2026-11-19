@@ -605,3 +605,57 @@ label.wide {
 .control-bar .run-log[hidden] {
   display: none;
 }
+
+/* ------------------------------------------------------------ 分区内的启动操作 */
+.tab-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 22px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.tab-actions h3 {
+  margin: 0;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.tab-actions .hint {
+  margin: 4px 0 0;
+}
+
+.row-buttons {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.row-buttons button {
+  padding: 9px 16px;
+}
+
+.form-footer {
+  margin-top: 22px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* ------------------------------------------------------------ 核心日志 */
+.log-panel pre {
+  margin: 12px 0 0;
+  max-height: 220px;
+  overflow: auto;
+  padding: 12px 14px;
+  background: #0f1a15;
+  color: #b9d8c7;
+  border-radius: 10px;
+  font: 12px/1.7 "Cascadia Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}

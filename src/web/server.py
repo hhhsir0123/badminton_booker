@@ -38,16 +38,29 @@ STATIC_FILES = {
 
 
 class _LogBuffer(logging.Handler):
-    """把日志收进环形缓冲，供页面轮询。"""
+    """把日志收进环形缓冲；额外挑出「核心日志」给页面展示。"""
 
-    def __init__(self, buffer: deque, maxlen: int = 400):
+    CORE_PREFIXES = ("src.", "__main__")
+
+    def __init__(self, buffer: deque, core: deque, maxlen: int = 400):
         super().__init__()
         self.buffer = buffer
+        self.core = core
         self.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s", "%H:%M:%S"))
 
     def emit(self, record):
         try:
             self.buffer.append(self.format(record))
+        except Exception:  # noqa: BLE001
+            pass
+        # 核心日志：只留本项目自己的 INFO 及以上，去掉 logger 名
+        if record.levelno < logging.INFO:
+            return
+        if not str(record.name).startswith(self.CORE_PREFIXES):
+            return
+        try:
+            stamp = time.strftime("%H:%M:%S", time.localtime(record.created))
+            self.core.append(f"{stamp} {record.getMessage()}")
         except Exception:  # noqa: BLE001
             pass
 
@@ -65,9 +78,10 @@ class Runner:
         self.started_at: float | None = None
         self.finished_at: float | None = None
         self.logs: deque = deque(maxlen=400)
+        self.core: deque = deque(maxlen=200)
         self._stop_requested = False
         self._lock = threading.Lock()
-        handler = _LogBuffer(self.logs)
+        handler = _LogBuffer(self.logs, self.core)
         handler.setLevel(logging.INFO)
         logging.getLogger().addHandler(handler)
 
@@ -88,6 +102,7 @@ class Runner:
             "finished_at": self.finished_at,
             "elapsed": int(time.time() - self.started_at) if self.started_at and alive else None,
             "logs": list(self.logs)[-120:],
+            "core": list(self.core)[-80:],
         }
 
     # ------------------------------------------------------------- 启停

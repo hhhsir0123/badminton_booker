@@ -276,23 +276,35 @@ async function api(path, options) {
 }
 
 function applyStatus(status) {
-  const node = $('#run-state');
-  const table = {
-    running: ['运行中', 'ok'],
-    done: ['已完成', 'ok'],
-    failed: ['失败', 'error'],
-    idle: ['未运行', '']
+  const running = status.state === "running";
+  const mode = status.mode || "";
+  const grabState = $("#grab-state");
+  const pollState = $("#poll-state");
+  const label = (which) => {
+    if (running) {
+      return mode === which ? ["运行中", "ok"] : ["未运行", ""];
+    }
+    const table = { done: ["已完成", "ok"], failed: ["失败", "error"], stopped: ["已停止", ""], idle: ["未运行", ""] };
+    return table[status.state] || table.idle;
   };
-  const [text, kind] = table[status.state] || table.idle;
-  node.textContent = status.state === 'running' && status.mode === 'poll' ? '轮询中' : text;
-  node.dataset.state = kind;
-  if (Array.isArray(status.logs) && status.logs.length) {
-    const log = $('#run-log');
-    log.textContent = status.logs.slice(-80).join('\n');
-    log.scrollTop = log.scrollHeight;
-  }
+  const [gt, gk] = label("grab");
+  const [pt, pk] = label("poll");
+  grabState.textContent = gt;
+  grabState.dataset.state = gk;
+  pollState.textContent = pt;
+  pollState.dataset.state = pk;
   if (status.message) {
-    $('#run-hint').textContent = status.message;
+    if (running && mode === "grab") $("#grab-hint").textContent = status.message;
+    if (running && mode === "poll") $("#poll-hint").textContent = status.message;
+    if (!running) {
+      $("#grab-hint").textContent = status.message;
+      $("#poll-hint").textContent = status.message;
+    }
+  }
+  const core = $("#core-log");
+  if (Array.isArray(status.core) && status.core.length) {
+    core.textContent = status.core.slice(-40).join("\n");
+    core.scrollTop = core.scrollHeight;
   }
 }
 
@@ -322,8 +334,11 @@ async function detectApi() {
     setInterval(refreshStatus, 2000);
   } catch (error) {
     apiReady = false;
-    $('#run-state').textContent = '静态模式';
-    $('#run-hint').textContent = '直接双击打开时只能编辑配置；用 python main.py --web 启动控制台后，这里可以一键开始/停止。';
+    $('#grab-state').textContent = '静态模式';
+    $('#poll-state').textContent = '静态模式';
+    const hint = '页面没有连上本地控制台：请用「启动控制台」脚本打开，才能保存配置和启停程序。';
+    $('#grab-hint').textContent = hint;
+    $('#poll-hint').textContent = hint;
   }
 }
 
@@ -404,13 +419,10 @@ function bind() {
   });
 
   $('#start').addEventListener('click', () => startRun('grab'));
-  $('#start-poll').addEventListener('click', () => startRun('poll'));
   $('#stop').addEventListener('click', stopRun);
+  $('#poll-start').addEventListener('click', () => startRun('poll'));
+  $('#poll-stop').addEventListener('click', stopRun);
   $('#save').addEventListener('click', saveToProgram);
-  $('#toggle-log').addEventListener('click', () => {
-    const log = $('#run-log');
-    log.hidden = !log.hidden;
-  });
 
   window.addEventListener('beforeunload', (event) => {
     if (!state.dirty) return undefined;

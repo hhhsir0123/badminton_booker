@@ -19,19 +19,6 @@
 </header>
 
 <main>
-  <section class="panel control-bar">
-    <output id="run-state" class="state">未连接</output>
-    <p id="run-hint" class="hint">直接保存并启停，不用敲命令。</p>
-    <div class="control-actions">
-      <button id="start" class="primary" type="button">开始抢票</button>
-      <button id="start-poll" class="secondary" type="button">开始轮询</button>
-      <button id="stop" class="secondary" type="button">停止</button>
-      <button id="save" class="secondary" type="button">保存配置到程序</button>
-      <button id="toggle-log" class="secondary" type="button">日志</button>
-    </div>
-    <pre id="run-log" class="run-log" tabindex="0" hidden>（暂无日志）</pre>
-  </section>
-
   <form id="config" class="panel config" novalidate>
     <nav class="tabs" role="tablist">
       <button type="button" class="tab active" data-tab="system">1 · 系统设置</button>
@@ -141,6 +128,18 @@
         <label class="switch">只抢到部分时段也提交<input id="partial" type="checkbox"></label>
         <label class="switch">候选都不满足时抢任意空场<input id="fallback" type="checkbox"><small>保底：当天最早的一段</small></label>
       </div>
+
+      <div class="tab-actions">
+        <div>
+          <h3>开始抢票</h3>
+          <p class="hint" id="grab-hint">保存配置后点这里，程序会等到开售前自动准备。</p>
+        </div>
+        <div class="row-buttons">
+          <output id="grab-state" class="state">未运行</output>
+          <button id="start" class="primary" type="button">开始抢票</button>
+          <button id="stop" class="secondary" type="button">停止</button>
+        </div>
+      </div>
     </section>
 
     <!-- ============================ 3 空场轮询 ============================ -->
@@ -157,10 +156,31 @@
         </label>
         <label class="switch">发现空场自动下单<input id="auto-booking" type="checkbox"><small>不勾选时只发通知</small></label>
       </div>
+
+      <div class="tab-actions">
+        <div>
+          <h3>开始轮询</h3>
+          <p class="hint" id="poll-hint">按间隔扫描空场，发现后通知（或自动下单）。</p>
+        </div>
+        <div class="row-buttons">
+          <output id="poll-state" class="state">未运行</output>
+          <button id="poll-start" class="primary" type="button">启动轮询</button>
+          <button id="poll-stop" class="secondary" type="button">关闭轮询</button>
+        </div>
+      </div>
     </section>
+
+    <div class="form-footer">
+      <button id="save" class="primary" type="button">保存配置到程序</button>
+    </div>
 
     <p class="feedback" id="feedback" role="status"></p>
   </form>
+
+  <section class="panel log-panel">
+    <div class="section-head"><div><h2>核心日志</h2><p>只显示关键步骤：准备、放场、选场、提交、结果。</p></div></div>
+    <pre id="core-log" tabindex="0">（暂无日志）</pre>
+  </section>
 </main>
 </body>
 </html>
