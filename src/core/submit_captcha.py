@@ -83,6 +83,7 @@ PATCH_JS = FIND_HELPERS + """
 return (function () {
   const form = __bbFindForm();
   if (!form) { return 'no-form'; }
+  if (!form.__bbOriginalVerifySuccess) { form.__bbOriginalVerifySuccess = form.verifySuccess; }
   window.__bbVerify = null;
   form.verifySuccess = function (verification, token) {
     window.__bbVerify = {verification: verification, token: token,
@@ -107,6 +108,16 @@ return (function (points) {
 """
 
 CAPTURED_JS = "return window.__bbVerify || null;"
+
+RESTORE_JS = FIND_HELPERS + """
+const form = __bbFindForm();
+if (form && form.__bbOriginalVerifySuccess) {
+  form.verifySuccess = form.__bbOriginalVerifySuccess;
+  delete form.__bbOriginalVerifySuccess;
+}
+window.__bbVerify = null;
+return true;
+"""
 
 SUBMIT_JS = FIND_HELPERS + """
 return (function (payload) {
@@ -195,13 +206,35 @@ class SubmitCaptchaFlow:
             data = self.driver.execute_script(CAPTURED_JS)
         except Exception:  # noqa: BLE001
             return None
-        if not data or not data.get("verification"):
+        if not data or not data.get("verification") or not data.get("token"):
             return None
         return PreSolvedCaptcha(
             verification=data["verification"],
             token=data.get("token") or "",
             form=data.get("form") or {},
         )
+
+    def ready_for_submission(self, min_validity: float = 0) -> bool:
+        """结果必须完整、未过期，且仍属于当前页面；刷新后不能复用旧结果。"""
+        captcha = self.presolved
+        if (captcha is None or not captcha.verification or not captcha.token
+                or not 0 <= captcha.age() < self.ttl_seconds - max(0, min_validity)):
+            return False
+        try:
+            current = self.driver.execute_script(CAPTURED_JS) or {}
+            return (current.get("verification") == captcha.verification
+                    and current.get("token") == captcha.token)
+        except Exception:  # noqa: BLE001
+            return False
+
+    def discard(self) -> bool:
+        """清除结果并恢复正常验证码回调，避免兜底时验证成功却无法提交。"""
+        self.presolved = None
+        try:
+            return bool(self.driver.execute_script(RESTORE_JS))
+        except Exception as error:  # noqa: BLE001
+            logger.warning("恢复现场验证码回调失败: %s", type(error).__name__)
+            return False
 
     # ------------------------------------------------------------- 主流程
 
@@ -213,16 +246,32 @@ class SubmitCaptchaFlow:
         - 每一轮失败就换图重试（认不出不计失败次数）；
         - 平台坐标和本地 OCR 差得太远时不点，直接换图（避免点错被计入失败）。
         """
+        self.presolved = None
         if self.solver is None:
             logger.warning("没有识别器，无法预解验证码")
             return None
-        if not self.read():
-            if not self.open():
-                logger.info("打不开验证码（可能要等提交时才出现）")
-                return None
         if not self.patch():
             logger.warning("页面结构不符合预期，放弃预解")
             return None
+
+        try:
+            return self._pre_solve_rounds(max_rounds)
+        finally:
+            if self.presolved is None:
+                self.discard()
+
+    def _pre_solve_rounds(self, max_rounds: int) -> Optional[PreSolvedCaptcha]:
+        if not (self.read() or {}).get("image"):
+            if not self.open():
+                logger.info("打不开验证码（可能要等提交时才出现）")
+                return None
+        # doVerify 异步加载图片，不能把组件已存在误当作图片已就绪。
+        deadline = time.monotonic() + 3
+        while not (self.read() or {}).get("image"):
+            if time.monotonic() >= deadline:
+                logger.warning("等待下单验证码图片超时")
+                return None
+            time.sleep(0.05)
 
         for round_index in range(1, max_rounds + 1):
             data = self.read()
@@ -252,7 +301,7 @@ class SubmitCaptchaFlow:
             if captured:
                 captured.solved_at = time.time()
                 self.presolved = captured
-                logger.info("验证码预解成功（%sms），token=%s", cost, captured.token[:8])
+                logger.info("验证码预解成功（%sms）", cost)
                 return captured
             logger.warning("预解第 %s 轮：点击后没有拿到 token（可能没通过）", round_index)
             self._refresh()
@@ -275,11 +324,8 @@ class SubmitCaptchaFlow:
 
     def submit(self, overrides: Optional[Dict[str, object]] = None) -> bool:
         """用预解 token + 表单提交。没有预解结果时返回 False。"""
-        if self.presolved is None:
-            logger.warning("没有预解 token，无法代提交")
-            return False
-        if self.presolved.age() > self.ttl_seconds:
-            logger.warning("预解 token 已过期（%.0fs），必须现场重新解", self.presolved.age())
+        if not self.ready_for_submission():
+            logger.warning("预解结果缺失、过期或页面已刷新，必须现场重新验证")
             return False
         payload = self.presolved.payload(overrides)
         try:
@@ -288,6 +334,8 @@ class SubmitCaptchaFlow:
             logger.warning("代提交失败: %s", error)
             return False
         logger.info("代提交结果: %s", result)
+        if result == "sent":
+            self.discard()
         return result == "sent"
 
     def _refresh(self) -> None:
@@ -329,13 +377,15 @@ class SubmitCaptchaFlow:
 
     def submit_selected(self, overrides: Optional[Dict[str, object]] = None) -> bool:
         """选场之后：点提交唤起验证码 → 读表单 → 用预解 token 直接提交。"""
-        if self.presolved is None:
+        if not self.ready_for_submission():
             return False
-        if not self.read():
-            if not self.click_submit_button():
-                return False
-            time.sleep(0.5)
-        form = self.read_form() or {}
+        # 即使验证码组件已经存在，也要点击提交以生成本次真实选场和同伴表单。
+        if not self.click_submit_button():
+            return False
+        form = self.read_form()
+        if not form:
+            logger.warning("没有读取到本次选场表单，放弃预解提交")
+            return False
         merged = dict(form)
         merged.update(overrides or {})
         return self.submit(merged)

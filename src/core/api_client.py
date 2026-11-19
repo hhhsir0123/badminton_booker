@@ -44,6 +44,9 @@ def signature(timestamp: int, path: str, data: Dict[str, Any], secret: str = SEC
 class ApiClient:
     """最小化的场馆接口客户端（只用到 GET/POST + 签名）。"""
 
+    # reservationDateSpaceInfo 的每个场地行混合了场地元数据和按时间 ID 索引的场格。
+    ROW_METADATA_KEYS = {"venueSpaceGroupId", "spaceName", "enSpaceName", "id", "venueSiteId"}
+
     def __init__(self, origin: str, token: str, timeout: float = 8.0):
         self.origin = origin.rstrip("/")
         self.token = token or ""
@@ -94,9 +97,60 @@ class ApiClient:
             payload = json.loads(body)
         except ValueError:
             return None
-        if payload.get("code") not in (200, "200"):
+        if not isinstance(payload, dict) or payload.get("code") not in (200, "200"):
             return None
         return payload.get("data") or {}
+
+    @classmethod
+    def inspect_day_response(cls, status: int, body: str, day: str) -> Dict[str, Any]:
+        """只保留可公开诊断字段；HTTP 成功不等于业务成功或目标日期已就绪。"""
+        result: Dict[str, Any] = {"ok": False, "business_code": None,
+                                  "target_date_present": False, "free_slots": 0}
+        if status != 200:
+            return dict(result, error="http-error" if status else "transport-error")
+        try:
+            payload = json.loads(body)
+        except (ValueError, TypeError):
+            return dict(result, error="invalid-json")
+        if not isinstance(payload, dict):
+            return dict(result, error="invalid-payload")
+        code = payload.get("code")
+        # 不回传平台原始 message，避免把敏感响应或不可信文本写入日志。
+        result["business_code"] = code if isinstance(code, (int, str)) and len(str(code)) < 16 else None
+        if code not in (200, "200"):
+            return dict(result, error="business-error")
+        data = payload.get("data")
+        dates = data.get("reservationDateSpaceInfo") if isinstance(data, dict) else None
+        if not isinstance(dates, dict):
+            return dict(result, error="invalid-date-data")
+        result["available_dates"] = [key for key in dates if isinstance(key, str)
+                                     and len(key) == 10 and key[4:5] == "-" and key[7:8] == "-"]
+        if day not in dates:
+            return dict(result, error="target-date-missing")
+        result["target_date_present"] = True
+        rows = dates[day]
+        if not isinstance(rows, list) or any(not isinstance(row, dict) for row in rows):
+            return dict(result, error="invalid-slot-data")
+        for row in rows:
+            for key, cell in row.items():
+                if key in cls.ROW_METADATA_KEYS:
+                    continue
+                if not isinstance(cell, dict) or cell.get("reservationStatus") not in (1, 2, 3, 4):
+                    return dict(result, error="invalid-slot-data")
+                if cell.get("reservationStatus") == cls.STATUS_FREE:
+                    start, end = cell.get("startDate"), cell.get("endDate")
+                    name = cell.get("spaceName")
+                    if (not isinstance(name, str) or not name.strip()
+                            or not isinstance(start, str) or not start.startswith(day + " ")
+                            or not isinstance(end, str) or not end.startswith(day + " ")
+                            or len(start.split(" ")[-1]) < 5 or len(end.split(" ")[-1]) < 5):
+                        return dict(result, error="invalid-slot-data")
+        try:
+            slots = cls.parse_slots(data, day)
+        except (TypeError, ValueError, AttributeError):
+            return dict(result, error="invalid-slot-data")
+        return dict(result, ok=True, target_date_present=True,
+                    free_slots=sum(len(items) for items in slots.values()), error=None)
 
     def free_slots(self, venue_site_id: str, day: str) -> Dict[str, Dict[str, str]]:
         """读某天的场格：{场地: {HH:MM-HH:MM: 原文}}，只保留真正可订的。"""

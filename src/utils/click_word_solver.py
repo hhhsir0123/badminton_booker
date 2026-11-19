@@ -119,7 +119,8 @@ def shape_score(mask: np.ndarray, templates: List[np.ndarray]) -> float:
 class ClickWordSolver:
     def __init__(self, min_confidence: float = 0.6, fallback_score: float = 0.7,
                  enable_fallback: bool = False, provider=None,
-                 angles: Tuple[int, ...] = (-10, 0, 10), padding: int = 8):
+                 angles: Tuple[int, ...] = (-10, 0, 10), padding: int = 8,
+                 fallback_to_local: bool = True):
         self.min_confidence = min_confidence
         self.fallback_score = fallback_score
         # 实测（2026-11-19 乒乓球真机）：兜底触发的 2 次全部配错框，默认关闭。
@@ -127,6 +128,7 @@ class ClickWordSolver:
         self.enable_fallback = enable_fallback
         # 可选：图鉴等打码平台 provider，优先使用，失败回落本地 OCR
         self.provider = provider
+        self.fallback_to_local = fallback_to_local
         self.angles = angles
         self.padding = padding
         self._detector = None
@@ -237,9 +239,12 @@ class ClickWordSolver:
                 if len(points) == len(words):
                     logger.info("打码平台返回坐标: %s", points)
                     return [(int(x), int(y)) for x, y in points]
-                logger.warning("打码平台返回 %s 个坐标，目标 %s 个，回落本地", len(points), len(words))
+                logger.warning("打码平台返回 %s 个坐标，目标 %s 个", len(points), len(words))
             except Exception as error:  # noqa: BLE001
-                logger.warning("打码平台失败，回落本地 OCR: %s", error)
+                logger.warning("打码平台失败: %s", error)
+            if not self.fallback_to_local:
+                return None
+            logger.info("打码平台识别未完成，回落本地 OCR")
 
         items = self.read_chars(png)
         used, points, fallbacks = set(), [], 0
