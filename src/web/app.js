@@ -249,6 +249,65 @@ function loadDraft() {
   }
 }
 
+
+// ------------------------------------------------------------------ 系统设置校验
+
+const PHONE_RE = /^1[3-9]\d{9}$/;
+const NAME_RE = /^[\u4e00-\u9fa5A-Za-z·\s]{2,20}$/;
+
+function clearFieldErrors() {
+  $$('.field-error').forEach((node) => node.remove());
+  $$('label.invalid').forEach((label) => label.classList.remove('invalid'));
+}
+
+function markField(selector, message) {
+  const input = $(selector);
+  if (!input) return;
+  const label = input.closest('label');
+  if (!label) return;
+  label.classList.add('invalid');
+  const hint = document.createElement('small');
+  hint.className = 'field-error';
+  hint.textContent = message;
+  label.appendChild(hint);
+}
+
+function collectSystemErrors() {
+  clearFieldErrors();
+  const messages = [];
+  const fail = (selector, message) => {
+    markField(selector, message);
+    messages.push(message);
+  };
+
+  const username = $('#username').value.trim();
+  if (!username) {
+    fail('#username', '请填写登录手机号');
+  } else if (!PHONE_RE.test(username)) {
+    fail('#username', '手机号应为 11 位数字');
+  }
+
+  const partner = $('#partner').value.trim();
+  if (partner && !NAME_RE.test(partner)) {
+    fail('#partner', '同伴姓名不合法（2~20 个中文/字母）');
+  }
+
+  if ($('#provider').value === 'ttshitu') {
+    if (!$('#tts-user').value.trim()) fail('#tts-user', '请填写图鉴用户名');
+    if (!$('#tts-pass').value) fail('#tts-pass', '请填写图鉴密码');
+    const typeId = Number($('#tts-type').value);
+    if (!Number.isInteger(typeId) || typeId < 1 || typeId > 99) {
+      fail('#tts-type', '题型应为 1~99 的整数');
+    }
+  }
+
+  if (messages.length) {
+    switchTab('system');
+    feedback(messages.join('；'), 'error');
+  }
+  return messages;
+}
+
 // ------------------------------------------------------------------ 校验
 
 function validateOrReport() {
@@ -347,6 +406,7 @@ async function saveToProgram() {
     feedback('当前是静态模式，请用「导出 config.yaml」手动覆盖', 'warn');
     return;
   }
+  if (collectSystemErrors().length) return;
   if (!validateOrReport()) return;
   try {
     await api('/api/config', {
@@ -366,6 +426,7 @@ async function startRun(mode) {
     feedback('静态模式不能启动程序，请用 python main.py --web', 'warn');
     return;
   }
+  if (collectSystemErrors().length) return;
   if (!validateOrReport()) return;
   try {
     // 不自动保存：改完请先点「保存配置到程序」，避免把没加载完的默认值写进去
@@ -395,7 +456,13 @@ async function stopRun() {
 // ------------------------------------------------------------------ 事件
 
 function bind() {
-  $('#config').addEventListener('input', () => {
+  $('#config').addEventListener('input', (event) => {
+    const label = event.target.closest('label');
+    if (label && label.classList.contains('invalid')) {
+      label.classList.remove('invalid');
+      const hint = label.querySelector('.field-error');
+      if (hint) hint.remove();
+    }
     applyForm();
     refreshNeeds();
     markDirty();

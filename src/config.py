@@ -238,6 +238,44 @@ def validate_config(data: Dict[str, Any]) -> List[str]:
     return errors
 
 
+PHONE_RE = re.compile(r"^1[3-9]\d{9}$")
+NAME_RE = re.compile(r"^[\u4e00-\u9fa5A-Za-z·\s]{2,20}$")
+
+
+def validate_for_run(data: Dict[str, Any]) -> List[str]:
+    """在 validate_config 之上，校验「真正能跑起来」需要的字段。
+
+    用于保存配置和启动任务：账号、同伴、验证码凭据缺失或格式错误要立刻报出来。
+    """
+    errors = list(validate_config(data))
+
+    username = str(_get(data, "user.username", "") or "").strip()
+    if not username:
+        errors.append("请填写登录手机号（系统设置 → 账号）")
+    elif not PHONE_RE.match(username):
+        errors.append("登录手机号应为 11 位手机号")
+
+    partner = str(_get(data, "user.partner_name", "") or "").strip()
+    if partner and not NAME_RE.match(partner):
+        errors.append("默认同伴姓名不合法（2~20 个中文/字母）")
+
+    provider = str(_get(data, "captcha.provider", "local") or "local").lower()
+    if provider not in ("local", "ttshitu"):
+        errors.append("验证码识别方式只能是 local 或 ttshitu")
+    elif provider == "ttshitu":
+        tts_user = str(_get(data, "captcha.ttshitu.username", "") or "").strip()
+        tts_pass = str(_get(data, "captcha.ttshitu.password", "") or "")
+        if not tts_user:
+            errors.append("选择图鉴打码时需要填写图鉴用户名")
+        if not tts_pass:
+            errors.append("选择图鉴打码时需要填写图鉴密码")
+        type_id = _get(data, "captcha.ttshitu.type_id", 43)
+        if not _is_int(type_id) or not 1 <= type_id <= 99:
+            errors.append("图鉴题型应为 1~99 的整数（推荐 43）")
+
+    return errors
+
+
 class Config:
     """配置管理类"""
 

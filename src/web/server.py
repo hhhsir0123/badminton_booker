@@ -22,7 +22,7 @@ from collections import deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-from ..config import Config, validate_config
+from ..config import Config, validate_config, validate_for_run
 from ..utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -112,12 +112,9 @@ class Runner:
             if self.thread and self.thread.is_alive():
                 return False, "已经在运行了"
             config = Config(self.config_path)
-            errors = validate_config(config.config)
+            errors = validate_for_run(config.config)
             if errors:
                 return False, "配置有误：" + "；".join(errors)
-            username = str(config.get("user.username", "") or "").strip()
-            if not username:
-                return False, "还没填登录手机号"
 
             self._stop_requested = False
             self.state = "running"
@@ -244,7 +241,10 @@ def _handler_factory(runner: Runner):
                         raise ValueError("配置顶层必须是字典")
                     config = Config(runner.config_path)
                     config.config = deep_merge(DEFAULTS, parsed)
-                    config.validate()
+                    errors = validate_for_run(config.config)
+                    if errors:
+                        self._json(400, {"ok": False, "error": "；".join(errors)})
+                        return
                     config.save()
                 except Exception as error:  # noqa: BLE001
                     self._json(400, {"ok": False, "error": str(error)})
