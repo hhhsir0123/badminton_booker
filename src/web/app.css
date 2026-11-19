@@ -332,13 +332,6 @@ details.advanced {
 }
 
 details.advanced summary,
-details.preview-panel summary {
-  cursor: pointer;
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 600;
-}
-
 details.advanced[open] summary {
   margin-bottom: 14px;
 }
@@ -423,18 +416,7 @@ button.secondary:hover {
   background: #eef2ef;
 }
 
-.preview-panel pre {
-  margin: 12px 0 0;
-  max-height: 320px;
-  overflow: auto;
-  padding: 12px;
-  background: #0f1a15;
-  color: #b9d8c7;
-  border-radius: 10px;
-  font: 12px/1.6 "Cascadia Mono", Consolas, monospace;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
+
 
 /* ------------------------------------------------------------ 反馈 */
 .feedback {
@@ -496,22 +478,9 @@ summary .muted {
 }
 
 /* ------------------------------------------------------------ 运行控制 */
-.run-panel .stack-actions {
-  gap: 8px;
-}
 
-.run-log {
-  margin: 12px 0 0;
-  max-height: 260px;
-  overflow: auto;
-  padding: 10px 12px;
-  background: #0f1a15;
-  color: #b9d8c7;
-  border-radius: 10px;
-  font: 11.5px/1.6 "Cascadia Mono", Consolas, monospace;
-  white-space: pre-wrap;
-  word-break: break-all;
-}
+
+
 
 /* ------------------------------------------------------------ 三个分区（Tabs） */
 .tabs {
@@ -586,43 +555,6 @@ label.switch small {
 
 label.wide {
   grid-column: 1 / -1;
-}
-
-/* ------------------------------------------------------------ 全局运行控制条 */
-.control-bar {
-  grid-column: 1 / -1;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 10px 14px;
-  position: sticky;
-  top: 10px;
-  z-index: 10;
-  padding: 14px 18px;
-}
-
-.control-bar .hint {
-  margin: 0;
-  flex: 1 1 220px;
-}
-
-.control-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.control-actions button {
-  padding: 8px 14px;
-}
-
-.control-bar .run-log {
-  flex-basis: 100%;
-  margin: 2px 0 0;
-}
-
-.control-bar .run-log[hidden] {
-  display: none;
 }
 
 /* ------------------------------------------------------------ 分区内的启动操作 */

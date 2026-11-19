@@ -254,8 +254,6 @@ https://storage.googleapis.com/chrome-for-testing-public/<version>/win64/chromed
 | `src/pipeline/ticket_grabbing_pipeline.py` | `_pre_solve_captcha()`（T-60s 预解）、`_submit_presolved()`（T0 代提交）、失败回落 `book_court` |
 | `test_files/bench_captcha_compare.py` | 本地 vs 平台对比（逐张结果 + JSON） |
 | `test_files/bench_presolve_live.py` | 真机预解通过率统计（不下单） |
-| `test_files/pp_pipeline_live.py` | 乒乓球真机全链路（会下单） |
-| `test_files/diag_captcha_live.py` | 诊断：平台 vs 本地坐标、点击结果 |
 
 ---
 
@@ -318,7 +316,7 @@ T+10s  用同一 token + 真实表单调 submitData
 2. 下载与 Chrome 版本匹配的 chromedriver 到 `drivers/chromedriver-win64/`；
 3. 填 `config.yaml` 的 `captcha.ttshitu`；
 4. 跑 `python test_files/demo_ttshitu.py --image <样本> --dry-run` 验证参数；
-5. 跑 `python test_files/bench_presolve_live.py` 验证真机预解。
+5. 在控制台点「测试登录」确认账密可用，再点「开始抢票」。
 
 ### 每日 07:00
 

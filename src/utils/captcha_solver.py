@@ -6,9 +6,8 @@
   同源图片用页面内 canvas.toDataURL 取，一次往返、几十毫秒；
 - 单次识别错了就要刷新重试，所以正确率直接等于耗时。这里用多种预处理各识别一次再投票。
 
-支持两类：
-1. 字符验证码（数字/字母）—— ddddocr 分类模型 + 多预处理投票；
-2. 点选验证码（"请依次点击…"）—— 交给 ClickCaptchaHandler。
+只处理字符型验证码（数字/字母）：ddddocr 分类模型 + 多预处理投票。
+点选验证码由 src/core/submit_captcha.py 负责。
 """
 from __future__ import annotations
 
@@ -100,7 +99,6 @@ class CaptchaSolver:
         self.min_length = max(1, int(min_length))
         self.max_length = max(self.min_length, int(max_length))
         self.ensemble = bool(ensemble)
-        self._click_handler = None
         self.last_variants: List[Tuple[str, str]] = []
 
     @property
@@ -346,9 +344,10 @@ class CaptchaSolver:
         if not self.present():
             return True
 
-        hint = self._click_hint()
-        if hint:
-            return self._solve_click(hint)
+        # 点选验证码由 src/core/submit_captcha.py 负责，这里只处理字符型
+        if self._click_hint():
+            logger.info("检测到点选验证码，交给 SubmitCaptchaFlow 处理")
+            return False
 
         attempts = max_attempts or self.max_attempts
         for attempt in range(1, attempts + 1):
@@ -379,15 +378,6 @@ class CaptchaSolver:
         logger.error("验证码尝试 %s 次仍未通过", attempts)
         return False
 
-    def _solve_click(self, hint: str) -> bool:
-        """点选验证码交给 ClickCaptchaHandler（det + ocr 两个模型）。"""
-        if self._click_handler is None:
-            from .click_captcha import ClickCaptchaHandler
-
-            self._click_handler = ClickCaptchaHandler(self.browser)
-        logger.info("检测到点选验证码: %s", hint)
-        return bool(self._click_handler.handle_click_captcha(max_retry=min(6, self.max_attempts * 2)))
-
     def warmup(self) -> Dict[str, float]:
         """提前把模型加载好，避免 07:00 第一次识别时卡 1~2 秒。"""
         timings: Dict[str, float] = {}
@@ -399,11 +389,4 @@ class CaptchaSolver:
         except Exception as error:  # noqa: BLE001
             logger.warning("验证码模型预热失败: %s", error)
 
-        if self._click_hint():
-            started = time.monotonic()
-            from .click_captcha import ClickCaptchaHandler
-
-            self._click_handler = ClickCaptchaHandler(self.browser)
-            timings["click_model"] = round(time.monotonic() - started, 2)
-            logger.info("点选验证码模型预热完成（%.2fs）", timings["click_model"])
         return timings

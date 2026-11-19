@@ -204,13 +204,14 @@ class BookingManager:
         return outcome
 
     def _solve_captcha_and_wait(self, timeout_ms: int) -> Dict:
-        """提交后弹出点选验证码：识别 → 点击 → 回到「只观察结果」，绝不重复提交。"""
+        """提交后弹出点选验证码：本地识别 → 点击 → 回到「只观察结果」，绝不重复提交。"""
         logger.info("提交后出现点选验证码，开始识别（首次加载模型约 1~2 秒）")
         try:
-            from ..utils.click_captcha import ClickCaptchaHandler
+            from ..utils.click_word_solver import ClickWordSolver
+            from .submit_captcha import SubmitCaptchaFlow
 
-            handler = ClickCaptchaHandler(self.browser)
-            if not handler.handle_click_captcha():
+            flow = SubmitCaptchaFlow(self.driver, ClickWordSolver())
+            if flow.solve_now(max_rounds=2) is None:
                 return {"ok": False, "reason": "captcha", "message": "验证码处理失败"}
             logger.info("验证码已通过，继续等待提交回执")
             return self.driver.execute_async_script(AWAIT_OUTCOME_JS, int(timeout_ms), "") or {
