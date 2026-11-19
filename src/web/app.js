@@ -129,11 +129,14 @@ function render() {
   $('#interval').value = polling.polling_interval;
   $('#days').value = (polling.polling_date_offsets || []).join(', ');
   $('#username').value = config.user.username || '';
+  $('#password').value = config.user.password || '';
   $('#partner').value = config.user.partner_name || '';
   $('#provider').value = captcha.provider === 'ttshitu' ? 'ttshitu' : 'local';
   $('#tts-user').value = tts.username || '';
   $('#tts-pass').value = tts.password || '';
   $('#tts-type').value = tts.type_id || 43;
+  $('#poll-slots').value = (polling.polling_time_slots || []).join(', ');
+  $('#auto-booking').checked = Boolean(polling.is_auto_booking);
   $('#attempts').value = booking.max_attempts;
   $('#partial').checked = Boolean(booking.allow_partial);
   $('#fallback').checked = Boolean(booking.fallback_any);
@@ -144,8 +147,47 @@ function render() {
   $('#mention-all').checked = Boolean(config.feishu.mention_all);
   renderPreferences(booking.preferences);
   toggleProvider();
+  refreshNeeds();
   $('#file-name').textContent = state.sourceName ? `当前来源：${state.sourceName}` : '';
   updatePreview();
+}
+
+function switchTab(name) {
+  $$('.tab').forEach((button) => {
+    const active = button.dataset.tab === name;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-selected', active ? 'true' : 'false');
+  });
+  $$('.tab-panel').forEach((panel) => {
+    panel.hidden = panel.dataset.panel !== name;
+  });
+  refreshNeeds();
+}
+
+function refreshNeeds() {
+  const targets = [
+    ['username', '#username'],
+    ['tts-user', '#tts-user'],
+    ['tts-pass', '#tts-pass']
+  ];
+  let missing = 0;
+  targets.forEach(([key, selector]) => {
+    const label = $(`.need[data-need="${key}"]`);
+    const input = $(selector);
+    if (!label || !input) return;
+    const hidden = Boolean(input.closest('[hidden]'));
+    const empty = !input.value.trim();
+    const needs = empty && !hidden;
+    label.classList.toggle('needs', needs);
+    if (needs) missing += 1;
+  });
+  const banner = $('#banner');
+  if (missing) {
+    banner.hidden = false;
+    banner.textContent = `还有 ${missing} 项需要你填写（标了「待填写」的字段）；其余项保持默认即可。`;
+  } else {
+    banner.hidden = true;
+  }
 }
 
 function toggleProvider() {
@@ -169,7 +211,13 @@ function applyForm() {
   }));
   config.polling.polling_interval = numberValue('#interval');
   config.polling.polling_date_offsets = parseDays($('#days').value);
+  config.polling.polling_time_slots = $('#poll-slots').value
+    .split(',')
+    .map((item) => item.trim())
+    .filter((item) => item.length);
+  config.polling.is_auto_booking = $('#auto-booking').checked;
   config.user.username = $('#username').value.trim();
+  config.user.password = $('#password').value;
   config.user.partner_name = $('#partner').value.trim();
   config.captcha = config.captcha || {};
   config.captcha.provider = $('#provider').value === 'ttshitu' ? 'ttshitu' : 'local';
@@ -418,8 +466,13 @@ async function stopRun() {
 function bind() {
   $('#config').addEventListener('input', () => {
     applyForm();
+    refreshNeeds();
     markDirty();
     schedulePreview();
+  });
+
+  $$('.tab').forEach((button) => {
+    button.addEventListener('click', () => switchTab(button.dataset.tab));
   });
 
   $('#add').addEventListener('click', () => {
@@ -432,6 +485,7 @@ function bind() {
   $('#provider').addEventListener('change', () => {
     toggleProvider();
     applyForm();
+    refreshNeeds();
     markDirty();
     schedulePreview();
   });

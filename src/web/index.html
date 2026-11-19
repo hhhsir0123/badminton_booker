@@ -20,80 +20,70 @@
 
 <main>
   <form id="config" class="panel config" novalidate>
-    <div class="section-head">
-      <div><h2>账号</h2><p>一次填好，以后不用再填。</p></div>
-    </div>
-    <div class="fields">
-      <label>登录手机号<input id="username" type="tel" autocomplete="off"></label>
-      <label>默认同伴<input id="partner" type="text" autocomplete="off"><small>平台里已加过的同伴；留空则不指定</small></label>
-    </div>
+    <nav class="tabs" role="tablist">
+      <button type="button" class="tab active" data-tab="system">1 · 系统设置</button>
+      <button type="button" class="tab" data-tab="grab">2 · 抢票设置</button>
+      <button type="button" class="tab" data-tab="poll">3 · 空场轮询</button>
+    </nav>
 
-    <hr>
-    <div class="section-head">
-      <div><h2>场地与时段</h2><p>从上到下依次尝试。</p></div>
-      <button type="button" id="add" class="secondary">添加候选</button>
-    </div>
-    <div id="preferences"></div>
-    <template id="pref-template">
-      <div class="pref-row">
-        <span class="rank" aria-hidden="true"></span>
-        <label class="court-field">场地<select name="court" required></select></label>
-        <label>开始<input name="start" type="time" step="60" required></label>
-        <label>结束<input name="end" type="time" step="60" required></label>
-        <div class="row-actions">
-          <button type="button" data-act="up" title="上移">↑</button>
-          <button type="button" data-act="down" title="下移">↓</button>
-          <button type="button" data-act="remove" title="移除">×</button>
-        </div>
+    <p class="banner" id="banner" hidden></p>
+
+    <!-- ============================ 1 系统设置 ============================ -->
+    <section class="tab-panel" data-panel="system">
+      <div class="section-head">
+        <div><h2>账号</h2><p>一次填好，以后不用再填。</p></div>
       </div>
-    </template>
+      <div class="fields">
+        <label class="need" data-need="username">登录手机号
+          <input id="username" type="tel" autocomplete="off" placeholder="必填">
+          <small>平台登录用的手机号</small>
+        </label>
+        <label>登录密码
+          <input id="password" type="password" autocomplete="off" placeholder="一般留空，用已保存的登录状态">
+          <small>只有换设备/登录失效时才需要填</small>
+        </label>
+        <label>默认同伴
+          <input id="partner" type="text" autocomplete="off" placeholder="选填">
+          <small>平台里已加过的同伴，留空表示不指定</small>
+        </label>
+      </div>
 
-    <hr>
-    <div class="section-head">
-      <div><h2>验证码</h2><p>下单时平台要求点选文字。默认用本地识别，失败时也能兜底。</p></div>
-    </div>
-    <div class="fields">
-      <label>识别方式
-        <select id="provider">
-          <option value="local">本地识别（免费）</option>
-          <option value="ttshitu">图鉴打码（更准，约 1 分钱/次）</option>
-        </select>
-      </label>
-    </div>
-    <div id="tts-block" class="fields" hidden>
-      <label>图鉴用户名<input id="tts-user" type="text" autocomplete="off" placeholder="注册手机号"></label>
-      <label>图鉴密码<input id="tts-pass" type="password" autocomplete="off"></label>
-      <label>题型<input id="tts-type" type="number" min="1" max="99" step="1"><small>43 = 传目标词的点选（推荐），20 = 通用点选（会认错）</small></label>
-    </div>
-
-    <hr>
-    <details class="advanced">
-      <summary>高级设置 <span class="muted">（开售时间、提前量、飞书通知等）</span></summary>
-
-      <div class="section-head"><div><h3>开售与节奏</h3><p>平台每天什么时候放场、提前多久准备。</p></div></div>
+      <div class="section-head">
+        <div><h2>开售与节奏</h2><p>平台每天什么时候放场、提前多久准备。</p></div>
+      </div>
       <div class="fields">
         <label>开售时间<input id="release" type="time" step="1" required></label>
-        <label>提前准备（秒）<input id="warmup" type="number" min="10" max="3600" step="1" required><small>提前打开浏览器、恢复登录</small></label>
-        <label>入场日期<input id="date" type="date"><small>留空时按开售日 + 提前天数推算</small></label>
-        <label>提前几天入场<input id="offset" type="number" min="0" max="30" step="1" required><small>填 2 表示抢后天</small></label>
-        <label>最多提交次数<input id="attempts" type="number" min="1" max="10" step="1"><small>平台有频控，建议 2~3</small></label>
-        <label>放场探测间隔（毫秒）<input id="probe" type="number" min="50" max="1000" step="10"><small>太小容易触发频控</small></label>
-        <label>抢到后浏览器保留（秒）<input id="keep" type="number" min="0" max="3600" step="10"><small>用于付款</small></label>
-        <label class="switch">只抢到部分时段也提交<input id="partial" type="checkbox"></label>
-        <label class="switch">候选都不满足时抢任意空场<input id="fallback" type="checkbox"><small>保底：当天最早的一段</small></label>
+        <label>提前准备（秒）<input id="warmup" type="number" min="10" max="3600" step="1" required><small>开售前多少秒开始准备</small></label>
       </div>
 
-      <div class="section-head"><div><h3>空场轮询</h3><p>轮询模式才会用到。</p></div></div>
+      <div class="section-head">
+        <div><h2>验证码</h2><p>下单时平台要求点选文字。默认本地识别，失败也能兜底。</p></div>
+      </div>
       <div class="fields">
-        <label>轮询间隔（秒）<input id="interval" type="number" min="5" max="3600" step="1" required></label>
-        <label>查询日期偏移<input id="days" type="text" required placeholder="0, 1, 2"><small>以当天为 0，多天用逗号分隔</small></label>
+        <label>识别方式
+          <select id="provider">
+            <option value="local">本地识别（免费）</option>
+            <option value="ttshitu">图鉴打码（更准，约 1 分钱/次）</option>
+          </select>
+        </label>
+      </div>
+      <div id="tts-block" class="fields" hidden>
+        <label class="need" data-need="tts-user">图鉴用户名
+          <input id="tts-user" type="text" autocomplete="off" placeholder="必填">
+        </label>
+        <label class="need" data-need="tts-pass">图鉴密码
+          <input id="tts-pass" type="password" autocomplete="off" placeholder="必填">
+        </label>
+        <label>题型<input id="tts-type" type="number" min="1" max="99" step="1"><small>43 = 传目标词的点选（推荐），20 = 通用点选（会认错）</small></label>
       </div>
 
-      <div class="section-head"><div><h3>飞书通知</h3><p>可选。不填就只在浏览器里提示。</p></div></div>
+      <div class="section-head">
+        <div><h2>飞书通知</h2><p>可选。不填就只在页面里提示。</p></div>
+      </div>
       <div class="fields">
         <label class="wide">群机器人 Webhook
           <input id="webhook" type="text" placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/…" autocomplete="off">
-          <small>飞书群 → 设置 → 群机器人 → 添加自定义机器人，复制 Webhook 地址</small>
+          <small>飞书群 → 设置 → 群机器人 → 添加自定义机器人</small>
         </label>
         <label>签名校验 secret
           <input id="secret" type="password" autocomplete="off">
@@ -101,7 +91,60 @@
         </label>
         <label class="switch">消息里 @所有人<input id="mention-all" type="checkbox"></label>
       </div>
-    </details>
+    </section>
+
+    <!-- ============================ 2 抢票设置 ============================ -->
+    <section class="tab-panel" data-panel="grab" hidden>
+      <div class="section-head">
+        <div><h2>场地与时段</h2><p>每天 07:00 放场时，从上到下依次尝试。</p></div>
+        <button type="button" id="add" class="secondary">添加候选</button>
+      </div>
+      <div class="fields">
+        <label>提前几天入场<input id="offset" type="number" min="0" max="30" step="1" required><small>填 2 表示抢后天</small></label>
+        <label>指定入场日期<input id="date" type="date"><small>留空则按开售日 + 提前天数推算</small></label>
+      </div>
+      <div id="preferences"></div>
+      <template id="pref-template">
+        <div class="pref-row">
+          <span class="rank" aria-hidden="true"></span>
+          <label class="court-field">场地<select name="court" required></select></label>
+          <label>开始<input name="start" type="time" step="60" required></label>
+          <label>结束<input name="end" type="time" step="60" required></label>
+          <div class="row-actions">
+            <button type="button" data-act="up" title="上移">↑</button>
+            <button type="button" data-act="down" title="下移">↓</button>
+            <button type="button" data-act="remove" title="移除">×</button>
+          </div>
+        </div>
+      </template>
+
+      <div class="section-head">
+        <div><h2>提交策略</h2><p>抢不到首选时怎么退让。</p></div>
+      </div>
+      <div class="fields">
+        <label>最多提交次数<input id="attempts" type="number" min="1" max="10" step="1"><small>平台有频控，建议 2~3</small></label>
+        <label>放场探测间隔（毫秒）<input id="probe" type="number" min="50" max="1000" step="10"><small>太小容易触发频控</small></label>
+        <label>抢到后浏览器保留（秒）<input id="keep" type="number" min="0" max="3600" step="10"><small>用于付款</small></label>
+        <label class="switch">只抢到部分时段也提交<input id="partial" type="checkbox"></label>
+        <label class="switch">候选都不满足时抢任意空场<input id="fallback" type="checkbox"><small>保底：当天最早的一段</small></label>
+      </div>
+    </section>
+
+    <!-- ============================ 3 空场轮询 ============================ -->
+    <section class="tab-panel" data-panel="poll" hidden>
+      <div class="section-head">
+        <div><h2>空场轮询</h2><p>不等到放场，按间隔扫描，捡别人取消的空场。</p></div>
+      </div>
+      <div class="fields">
+        <label>轮询间隔（秒）<input id="interval" type="number" min="5" max="3600" step="1" required></label>
+        <label>查询日期偏移<input id="days" type="text" required placeholder="0, 1, 2"><small>以当天为 0，多天用逗号分隔</small></label>
+        <label class="wide">关注时段
+          <input id="poll-slots" type="text" placeholder="19:00-20:00, 20:00-21:00">
+          <small>留空表示不限制时段；多段用逗号分隔</small>
+        </label>
+        <label class="switch">发现空场自动下单<input id="auto-booking" type="checkbox"><small>不勾选时只发通知</small></label>
+      </div>
+    </section>
 
     <p class="feedback" id="feedback" role="status"></p>
   </form>
@@ -121,7 +164,7 @@
 
     <section class="panel file-panel">
       <div class="section-head"><h2>配置文件</h2><output id="status" class="state">未载入</output></div>
-      <p class="hint">如果页面是直接双击打开的（没有本地控制台），就用这里的「载入 / 导出」手动覆盖 <code>config.yaml</code>。</p>
+      <p class="hint">直接双击打开页面时（没有本地控制台），用这里的「载入 / 导出」手动覆盖 <code>config.yaml</code>。</p>
       <input id="file" type="file" accept=".yaml,.yml,.txt" hidden>
       <div class="stack-actions">
         <button id="import" class="secondary" type="button">载入 config.yaml</button>
@@ -130,16 +173,6 @@
         <button id="reset" class="secondary" type="button">恢复默认</button>
       </div>
       <p id="file-name" class="hint"></p>
-    </section>
-
-    <section class="panel">
-      <div class="section-head"><h2>怎么用</h2></div>
-      <ol class="steps">
-        <li>填好「账号」里的登录手机号和默认同伴。</li>
-        <li>确认「场地与时段」的候选顺序。</li>
-        <li>点「保存配置到程序」，再点「开始抢票」。</li>
-        <li>程序会在开售前自己准备、到点抢；想提前结束点「停止」。</li>
-      </ol>
     </section>
 
     <details class="panel preview-panel">
