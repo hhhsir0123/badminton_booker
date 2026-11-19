@@ -295,6 +295,116 @@ async function copyText(text) {
   }
 }
 
+// ------------------------------------------------------------------ 本地控制台 API
+
+let apiReady = false;
+
+async function api(path, options) {
+  const response = await fetch(path, options);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.ok === false) {
+    throw new Error(data.error || data.message || response.statusText);
+  }
+  return data;
+}
+
+function applyStatus(status) {
+  const node = $('#run-state');
+  const table = {
+    running: ['运行中', 'ok'],
+    done: ['已完成', 'ok'],
+    failed: ['失败', 'error'],
+    idle: ['未运行', '']
+  };
+  const [text, kind] = table[status.state] || table.idle;
+  node.textContent = status.state === 'running' && status.mode === 'poll' ? '轮询中' : text;
+  node.dataset.state = kind;
+  if (Array.isArray(status.logs) && status.logs.length) {
+    const log = $('#run-log');
+    log.textContent = status.logs.slice(-80).join('\n');
+    log.scrollTop = log.scrollHeight;
+  }
+  if (status.message) {
+    $('#run-hint').textContent = status.message;
+  }
+}
+
+async function refreshStatus() {
+  if (!apiReady) return;
+  try {
+    applyStatus(await api('/api/status'));
+  } catch (error) {
+    apiReady = false;
+  }
+}
+
+async function detectApi() {
+  try {
+    applyStatus(await api('/api/status'));
+    apiReady = true;
+    setInterval(refreshStatus, 2000);
+  } catch (error) {
+    apiReady = false;
+    $('#run-state').textContent = '静态模式';
+    $('#run-hint').textContent = '直接双击打开时只能编辑配置；用 python main.py --web 启动控制台后，这里可以一键开始/停止。';
+  }
+}
+
+async function saveToProgram() {
+  if (!apiReady) {
+    feedback('当前是静态模式，请用「导出 config.yaml」手动覆盖', 'warn');
+    return;
+  }
+  if (!validateOrReport()) return;
+  try {
+    await api('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ yaml: IO.emit(state.config) })
+    });
+    state.dirty = false;
+    setStatus('已保存', 'ok');
+    feedback('已写入 config.yaml', 'ok');
+  } catch (error) {
+    feedback(`保存失败：${error.message}`, 'error');
+  }
+}
+
+async function startRun(mode) {
+  if (!apiReady) {
+    feedback('静态模式不能启动程序，请用 python main.py --web', 'warn');
+    return;
+  }
+  if (!validateOrReport()) return;
+  try {
+    await api('/api/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ yaml: IO.emit(state.config) })
+    });
+    const result = await api('/api/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode })
+    });
+    feedback(result.message || '已启动', 'ok');
+    refreshStatus();
+  } catch (error) {
+    feedback(`启动失败：${error.message}`, 'error');
+  }
+}
+
+async function stopRun() {
+  if (!apiReady) return;
+  try {
+    const result = await api('/api/stop', { method: 'POST' });
+    feedback(result.message || '正在停止', 'warn');
+    refreshStatus();
+  } catch (error) {
+    feedback(`停止失败：${error.message}`, 'error');
+  }
+}
+
 // ------------------------------------------------------------------ 事件
 
 function bind() {
@@ -317,6 +427,11 @@ function bind() {
     markDirty();
     schedulePreview();
   });
+
+  $('#start').addEventListener('click', () => startRun('grab'));
+  $('#start-poll').addEventListener('click', () => startRun('poll'));
+  $('#stop').addEventListener('click', stopRun);
+  $('#save').addEventListener('click', saveToProgram);
 
   $('#import').addEventListener('click', () => $('#file').click());
   $('#file').addEventListener('change', (event) => {
@@ -370,6 +485,7 @@ function boot() {
   state.sourceName = draft ? draft.sourceName || '' : '';
   bind();
   render();
+  detectApi();
   if (draft) {
     setStatus('草稿已恢复', 'dirty');
     feedback('已恢复上次未导出的编辑内容', '');

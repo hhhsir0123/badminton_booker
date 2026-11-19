@@ -12,7 +12,7 @@
 <header class="mast">
   <div class="mast-inner">
     <div class="brand"><span class="court-mark" aria-hidden="true"></span><div>
-      <h1>羽毛球预约 · 配置</h1><p>学院路校区 · 羽毛球馆 · 纯本地页面</p>
+      <h1>羽毛球预约 · 配置</h1><p>学院路校区 · 羽毛球馆 · 本地控制台</p>
     </div></div>
     <div class="time-zone">北京时间 <b>UTC+8</b></div>
   </div>
@@ -107,9 +107,21 @@
   </form>
 
   <aside>
+    <section class="panel run-panel">
+      <div class="section-head"><h2>运行控制</h2><output id="run-state" class="state">未连接</output></div>
+      <div class="stack-actions">
+        <button id="start" class="primary" type="button">开始抢票</button>
+        <button id="start-poll" class="secondary" type="button">开始轮询</button>
+        <button id="stop" class="secondary" type="button">停止</button>
+        <button id="save" class="secondary" type="button">保存配置到程序</button>
+      </div>
+      <p id="run-hint" class="hint">直接保存并启停，不用敲命令。</p>
+      <pre id="run-log" class="run-log" tabindex="0">（暂无日志）</pre>
+    </section>
+
     <section class="panel file-panel">
       <div class="section-head"><h2>配置文件</h2><output id="status" class="state">未载入</output></div>
-      <p class="hint">浏览器不能直接改磁盘上的文件，所以流程是：载入现有 <code>config.yaml</code> → 改 → 导出，覆盖项目根目录里的同一个文件。</p>
+      <p class="hint">如果页面是直接双击打开的（没有本地控制台），就用这里的「载入 / 导出」手动覆盖 <code>config.yaml</code>。</p>
       <input id="file" type="file" accept=".yaml,.yml,.txt" hidden>
       <div class="stack-actions">
         <button id="import" class="secondary" type="button">载入 config.yaml</button>
@@ -121,12 +133,12 @@
     </section>
 
     <section class="panel">
-      <div class="section-head"><h2>接下来</h2></div>
+      <div class="section-head"><h2>怎么用</h2></div>
       <ol class="steps">
-        <li>把导出的 <code>config.yaml</code> 放到项目根目录，覆盖旧文件。</li>
-        <li><code>python main.py --check</code> 确认下一次开售时间和候选。</li>
-        <li><code>python main.py --peek</code> 先看一眼目标日期能不能订。</li>
-        <li>每天 7 点自动跑：用「任务计划程序」在 06:58 执行 <code>python main.py</code>，或一直开着 <code>python main.py --poll</code>。</li>
+        <li>填好「账号」里的登录手机号和默认同伴。</li>
+        <li>确认「场地与时段」的候选顺序。</li>
+        <li>点「保存配置到程序」，再点「开始抢票」。</li>
+        <li>程序会在开售前自己准备、到点抢；想提前结束点「停止」。</li>
       </ol>
     </section>
 

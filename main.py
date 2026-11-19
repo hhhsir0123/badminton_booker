@@ -76,24 +76,24 @@ def run_poll(config_path: str) -> int:
 
 
 def open_config_page(config_path: str) -> int:
-    """在浏览器里打开纯静态的配置编辑页（不上任何服务）。"""
-    import webbrowser
-    from pathlib import Path
+    """启动本地控制台：配置页 + 开始/停止按钮（127.0.0.1，仅本机可访问）。"""
+    from src.config import Config
+    from src.web.server import serve
 
-    page = Path(ROOT) / "src" / "web" / "index.html"
-    if not page.exists():
-        logger.error("找不到配置页面: %s", page)
-        return 1
-    webbrowser.open(page.as_uri())
-    logger.info("已打开配置页面: %s", page)
-    logger.info("编辑后点「导出 config.yaml」，覆盖 %s 即可", config_path)
+    config = Config(config_path)
+    port = int(config.get("web.port", 8765) or 8765)
+    host = str(config.get("web.host", "127.0.0.1") or "127.0.0.1")
+    auto_open = bool(config.get("web.auto_open", True))
+    logger.info("启动本地控制台 http://%s:%s/", host, port)
+    serve(config_path, host=host, port=port, open_browser=auto_open)
     return 0
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="羽毛球场地自动预订")
     parser.add_argument("--config", default=None, help="配置文件路径，默认 ./config.yaml")
-    parser.add_argument("--web", action="store_true", help="打开静态配置编辑页")
+    parser.add_argument("--web", action="store_true", help="启动本地控制台（配置 + 开始/停止）")
+    parser.add_argument("--auto", action="store_true", help="按配置跑一次抢票（不开控制台）")
     parser.add_argument("--check", action="store_true", help="检查配置并打印计划")
     parser.add_argument("--peek", action="store_true", help="立即查询可订场次，不下单")
     parser.add_argument("--dry-run", action="store_true", help="演练：真的选场，但不提交订单")
@@ -114,6 +114,7 @@ def main() -> int:
         return run_once(config_path, preview=True, overrides=overrides)
     if args.poll:
         return run_poll(config_path)
+    # 默认（以及 --auto）都是按配置跑一次抢票
     return run_once(config_path, overrides=overrides)
 
 

@@ -473,3 +473,21 @@ summary .muted {
 #tts-block[hidden] {
   display: none;
 }
+
+/* ------------------------------------------------------------ 运行控制 */
+.run-panel .stack-actions {
+  gap: 8px;
+}
+
+.run-log {
+  margin: 12px 0 0;
+  max-height: 260px;
+  overflow: auto;
+  padding: 10px 12px;
+  background: #0f1a15;
+  color: #b9d8c7;
+  border-radius: 10px;
+  font: 11.5px/1.6 "Cascadia Mono", Consolas, monospace;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
