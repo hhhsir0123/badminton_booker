@@ -18,6 +18,69 @@ HELPERS = r"""
 
   var bb = {};
 
+  // 保存场次请求的脱敏结果，不能把资源加载完成误当业务成功。
+  bb.dayResponses = [];
+  bb.recordDayResponse = function (url, body, status, raw, since) {
+    try {
+      var parsed = new URL(url, location.origin);
+      if (!parsed.pathname.endsWith('/api/reservation/day/info')) { return; }
+      var day = parsed.searchParams.get('searchDate');
+      if (!day && body) {
+        if (typeof body === 'string') {
+          try { day = JSON.parse(body).searchDate; } catch (_) { day = new URLSearchParams(body).get('searchDate'); }
+        } else if (body.get) { day = body.get('searchDate'); }
+      }
+      var payload;
+      try { payload = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (_) { payload = null; }
+      var code = payload && payload.code;
+      var dates = payload && payload.data && payload.data.reservationDateSpaceInfo;
+      var rows = dates && dates[day];
+      var valid = Array.isArray(rows) && rows.every(function (row) {
+        return row && typeof row === 'object' && !Array.isArray(row) && Object.keys(row).every(function (key) {
+          if (['venueSpaceGroupId', 'spaceName', 'enSpaceName', 'id', 'venueSiteId'].indexOf(key) >= 0) { return true; }
+          var cell = row[key];
+          if (!cell || typeof cell !== 'object' || [1, 2, 3, 4].indexOf(cell.reservationStatus) < 0) { return false; }
+          return cell.reservationStatus !== 1 || (typeof cell.spaceName === 'string' && cell.spaceName.trim()
+            && typeof cell.startDate === 'string' && cell.startDate.indexOf(day + ' ') === 0
+            && typeof cell.endDate === 'string' && cell.endDate.indexOf(day + ' ') === 0);
+        });
+      });
+      var ok = status === 200 && (code === 200 || code === '200') && valid;
+      bb.dayResponses.push({ date: day, since: since, ok: !!ok, status: status,
+        error: status !== 200 ? 'http-error' : (!payload ? 'invalid-json' :
+          ((code !== 200 && code !== '200') ? 'business-error' : (!valid ? 'invalid-date-data' : null))) });
+      if (bb.dayResponses.length > 30) { bb.dayResponses.shift(); }
+    } catch (_) { /* 诊断不得干扰页面原有请求 */ }
+  };
+  var originalOpen = XMLHttpRequest.prototype.open;
+  var originalSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    this.__bbUrl = url;
+    return originalOpen.apply(this, arguments);
+  };
+  XMLHttpRequest.prototype.send = function (body) {
+    var xhr = this, since = performance.now(), url = xhr.__bbUrl;
+    xhr.addEventListener('loadend', function () {
+      try { bb.recordDayResponse(url, body, xhr.status, xhr.responseType === 'json' ? xhr.response : xhr.responseText, since); }
+      catch (_) { /* 不读取非文本响应 */ }
+    }, { once: true });
+    return originalSend.apply(this, arguments);
+  };
+  if (window.fetch) {
+    var originalFetch = window.fetch;
+    window.fetch = function (input, options) {
+      var since = performance.now();
+      var url = typeof input === 'string' ? input : input.url;
+      var body = options && options.body;
+      return originalFetch.apply(this, arguments).then(function (response) {
+        if (String(url).indexOf('/api/reservation/day/info') >= 0) {
+          response.clone().text().then(function (raw) { bb.recordDayResponse(url, body, response.status, raw, since); }).catch(function () {});
+        }
+        return response;
+      });
+    };
+  }
+
   bb.visible = function (el) {
     if (!el || !el.getClientRects || !el.getClientRects().length) { return false; }
     var style = getComputedStyle(el);
@@ -300,7 +363,7 @@ window.__bb.waitFor(function () { return eval(condition); }, timeout || 3000)
 # 日期条的点击：返回点击前的 performance.now() 便于匹配这次请求。
 CLICK_DATE_JS = """
 const done = arguments[arguments.length - 1];
-const [index, timeout] = arguments;
+const [index, timeout, wanted] = arguments;
 (function () {
   const tabs = [...document.querySelectorAll('.date_box > div')].filter(e => e.getClientRects().length);
   const tab = tabs[index];
@@ -309,14 +372,10 @@ const [index, timeout] = arguments;
   tab.click();
   const started = performance.now();
   (function wait() {
-    const hit = performance.getEntriesByType('resource').some(function (entry) {
-      try {
-        const url = new URL(entry.name);
-        return url.pathname.endsWith('/api/reservation/day/info')
-          && entry.startTime >= since && entry.responseEnd > 0;
-      } catch (error) { return false; }
+    const hit = window.__bb && window.__bb.dayResponses.find(function (entry) {
+      return entry.since >= since && entry.date === wanted;
     });
-    if (hit) { done({ ok: true, since: since, ms: performance.now() - started }); return; }
+    if (hit) { done({ ok: hit.ok, error: hit.error, status: hit.status, since: since, ms: performance.now() - started }); return; }
     if (performance.now() - started > (timeout || 900)) {
       done({ ok: false, error: 'no-response', since: since, ms: performance.now() - started });
       return;

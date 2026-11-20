@@ -2,6 +2,7 @@
 import os
 import sys
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import Mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -65,6 +66,7 @@ class PresolvedSubmitTest(unittest.TestCase):
         pipeline = TicketGrabbingPipeline.__new__(TicketGrabbingPipeline)
         pipeline.logger = Mock()
         pipeline.summary = {}
+        pipeline._now = lambda: datetime.now(timezone.utc)
         pipeline.config = FakeConfig({"runtime.submit_timeout_ms": 500})
         pipeline.booking_manager = Mock()
         pipeline.booking_manager.select_slots.return_value = selection

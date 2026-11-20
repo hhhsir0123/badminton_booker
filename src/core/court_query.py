@@ -71,6 +71,8 @@ class QueryManager:
         self._api: Optional[ApiClient] = None
         self._api_site: Optional[str] = None
         self._api_expire = 0.0
+        self.last_query_status: Dict[str, Any] = {}
+        self.last_page_error: Optional[str] = None
 
     # ------------------------------------------------------------------ 基础
 
@@ -181,50 +183,93 @@ class QueryManager:
         tabs = self.tabs()
         return "active" in tabs[index]["cls"].split()
 
-    def _click_tab(self, index: int, timeout: int = 1200) -> Dict[str, Any]:
-        return self._async(CLICK_DATE_JS, index, timeout) or {"ok": False, "error": "no-result"}
+    def _click_tab(self, index: int, timeout: int = 1200, wanted: Optional[str] = None) -> Dict[str, Any]:
+        return self._async(CLICK_DATE_JS, index, timeout, wanted) or {"ok": False, "error": "no-result"}
+
+    def _loaded_response(self, wanted: str) -> Optional[Dict[str, Any]]:
+        """整页刚刷新且目标已选中时，使用当前文档已校验的首次响应。"""
+        return self._js("""
+            const hits = window.__bb && window.__bb.dayResponses || [];
+            return [...hits].reverse().find(item => item.date === arguments[0]) || null;
+        """, wanted)
 
     def reload(self):
         self.driver.refresh()
         self.reset_helpers_cache()
         self.last_date = None
+        self._ensure_helpers()
         self._wait_false(lambda _: self.tabs(), 15)
 
     def focus_date(self, wanted: str, fresh: bool = False, refresh: str = "auto") -> bool:
         """让预约表显示 wanted 这一天的数据。fresh=True 时强制重新取一次数据。"""
         self.last_date = None
+        self.last_query_status = {"ok": False, "date": wanted, "error": None}
         if not self._wait_false(lambda _: self.tabs(), 15):
+            self.last_query_status["error"] = "date-bar-missing"
             logger.error("页面上没有日期选择条，可能还没进入场馆页面")
             return False
         self._ensure_helpers()
         index = self.index_of(wanted)
         if index is None:
-            logger.info("日期 %s 不在当前可预约窗口内", wanted)
-            return False
+            before = [tab.get("text", "")[:40] for tab in self.tabs()]
+            logger.info("目标日期 %s 未出现在页面，刷新日期窗口（当前日期栏=%s）", wanted, before)
+            # 开售前打开的日期栏不会被 Python 接口探测更新，必须先刷新再定位。
+            started = time.monotonic()
+            self.reload()
+            index = self.index_of(wanted)
+            self.last_query_status["refresh_ms"] = int((time.monotonic() - started) * 1000)
+            self.last_query_status["refreshed"] = True
+            self.last_query_status["visible_dates"] = [tab.get("text", "")[:40] for tab in self.tabs()]
+            logger.info("日期窗口刷新结束：目标=%s，就绪=%s，耗时=%sms，日期栏=%s", wanted,
+                        index is not None, self.last_query_status["refresh_ms"],
+                        self.last_query_status["visible_dates"])
+            if index is None:
+                self.last_query_status["error"] = "target-date-missing"
+                return False
 
         active = "active" in self.tabs()[index]["cls"].split()
         if active and not fresh:
             self.last_date = wanted
+            self.last_query_status["ok"] = True
             return True
 
-        if refresh == "reload":
+        if refresh == "reload" and not self.last_query_status.get("refreshed"):
+            refresh_started = time.monotonic()
             self.reload()
+            self.last_query_status["refreshed"] = True
+            self.last_query_status["refresh_ms"] = int((time.monotonic() - refresh_started) * 1000)
+            logger.info("目标日期 %s 强制刷新完成，耗时=%sms", wanted, self.last_query_status["refresh_ms"])
             index = self.index_of(wanted)
             if index is None:
+                self.last_query_status["error"] = "target-date-missing"
                 return False
 
         started_at = datetime.now(BEIJING)
-        result = self._click_tab(index)
+        loaded = (self._loaded_response(wanted) if self.last_query_status.get("refreshed")
+                  and "active" in self.tabs()[index]["cls"].split() else None)
+        result = loaded or self._click_tab(index, wanted=wanted)
         if not result.get("ok") and refresh == "auto":
             # 部分前端在页签已选中时不会再发请求，退化成整页刷新
             logger.info("点击日期页签没有触发数据请求（%s），改用整页刷新", result.get("error"))
+            refresh_started = time.monotonic()
             self.reload()
+            self.last_query_status["refreshed"] = True
+            self.last_query_status["refresh_ms"] = int((time.monotonic() - refresh_started) * 1000)
             index = self.index_of(wanted)
             if index is None:
+                self.last_query_status["error"] = "target-date-missing"
                 return False
-            result = self._click_tab(index)
+            loaded = (self._loaded_response(wanted)
+                      if "active" in self.tabs()[index]["cls"].split() else None)
+            result = loaded or self._click_tab(index, wanted=wanted)
+
+        if not result.get("ok"):
+            self.last_query_status["error"] = result.get("error") or "date-response-missing"
+            logger.warning("目标日期 %s 点击后没有确认数据响应，不能认定场次读取成功", wanted)
+            return False
 
         if not self._wait_false(lambda _: self.is_active(wanted), 8):
+            self.last_query_status["error"] = "date-not-active"
             logger.error("日期 %s 没有切换到选中状态", wanted)
             return False
 
@@ -235,6 +280,8 @@ class QueryManager:
             pass
 
         self.last_date = wanted
+        self.last_query_status["ok"] = True
+        self.last_query_status["response_ms"] = result.get("ms")
         logger.debug(
             "日期 %s 就绪，数据响应耗时 %sms，整体 %sms",
             wanted, result.get("ms"), int((datetime.now(BEIJING) - started_at).total_seconds() * 1000),
@@ -245,8 +292,26 @@ class QueryManager:
 
     def snapshot(self) -> Optional[Dict[str, Any]]:
         page = self._async(SNAPSHOT_JS) or {}
-        if page.get("error"):
+        if not isinstance(page, dict) or page.get("error"):
             return None
+        labels, rows = page.get("labels"), page.get("rows")
+        if (not isinstance(labels, list) or len(labels) < 2
+                or any(not isinstance(label, str) for label in labels)
+                or any(not label.strip() for label in labels[1:])
+                or not isinstance(rows, list)):
+            return None
+        reversed_axes = bool(page.get("reversed"))
+        if reversed_axes and any(parse_slot(label) is None for label in labels[1:]):
+            return None
+        for row in rows:
+            if (not isinstance(row, dict) or not isinstance(row.get("label"), str)
+                    or not row["label"].strip() or not isinstance(row.get("cells"), list)
+                    or len(row["cells"]) != len(labels) - 1
+                    or (not reversed_axes and parse_slot(row["label"]) is None)):
+                return None
+            if any(cell is not None and (not isinstance(cell, dict)
+                    or not isinstance(cell.get("classes"), list)) for cell in row["cells"]):
+                return None
         return page
 
     @staticmethod
@@ -315,18 +380,24 @@ class QueryManager:
         while page.get("prev") and guard < 8:
             nxt = self._turn(page, "prev")
             if not nxt:
+                self.last_page_error = "pagination-rewind-failed"
                 return page
             page, guard = nxt, guard + 1
+        if page.get("prev"):
+            self.last_page_error = "pagination-limit"
         return page
 
     def iter_pages(self) -> Iterator[Dict[str, Any]]:
+        self.last_page_error = None
         page = self.first_page()
         if not page:
+            self.last_page_error = "table-missing"
             return
         seen = set()
         while True:
             key = tuple(page.get("labels") or [])
             if key in seen:
+                self.last_page_error = "pagination-repeated"
                 logger.warning("分页出现重复表头，停止遍历")
                 return
             seen.add(key)
@@ -335,6 +406,7 @@ class QueryManager:
                 return
             nxt = self._turn(page, "next")
             if not nxt:
+                self.last_page_error = "pagination-failed"
                 return
             page = nxt
 
@@ -395,6 +467,7 @@ class QueryManager:
             "status": status,
             "length": len(body or ""),
             "ms": (time.monotonic() - started) * 1000,
+            **ApiClient.inspect_day_response(status, body, wanted),
         }
 
     def _api_client(self) -> Optional[ApiClient]:

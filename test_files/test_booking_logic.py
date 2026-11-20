@@ -187,7 +187,11 @@ class CandidatesTest(unittest.TestCase):
 
 class ReleaseProbeTest(unittest.TestCase):
     def test_body_growth_means_released(self):
-        self.assertTrue(released({"status": 200, "length": 900}, 100))
+        # 响应变大本身不能证明业务成功。
+        self.assertFalse(released({"status": 200, "length": 900}, 100))
+
+    def test_valid_target_date_means_ready(self):
+        self.assertTrue(released({"status": 200, "ok": True, "target_date_present": True}, None))
 
     def test_unchanged_body(self):
         self.assertFalse(released({"status": 200, "length": 900}, 900))
