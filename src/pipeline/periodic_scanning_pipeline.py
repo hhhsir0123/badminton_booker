@@ -418,7 +418,7 @@ class PeriodicScanningPipeline(BasePipeline):
         # 不拦截 verifySuccess，让前端自己校验并 submitData，避免 token 语义对不上。
         timeout = float(self.config.get("runtime.submit_timeout_ms", 6000) or 6000) / 1000
         mark = flow.order_mark()
-        if not flow.click_submit_button():
+        if not self._click_submit_ready(flow):
             flow.discard()
             self._miss_reason = "submit"
             return None
@@ -470,6 +470,16 @@ class PeriodicScanningPipeline(BasePipeline):
             "created": BookingOutcome.CREATED,
             "rejected": BookingOutcome.REJECTED,
         }.get(result, BookingOutcome.UNKNOWN)
+
+    @staticmethod
+    def _click_submit_ready(flow, tries: int = 3) -> bool:
+        """点提交；按钮/须知还没就绪（页面刚刷新）时短暂重试。"""
+        for attempt in range(1, tries + 1):
+            if flow.click_submit_button():
+                return True
+            if attempt < tries:
+                time.sleep(0.3 * attempt)
+        return False
 
     def _close_captcha(self):
         """解失败时把验证码弹窗关掉，别让它挡住下一轮的读表和选场。"""

@@ -336,8 +336,19 @@ class BookingManager:
         if is_click_parter or partner_names:
             self.click_partner(partner_names)
 
-        payload = (self.submit(submit_timeout_ms, confirm_terms=True)
-                   if confirm_terms else self.submit(submit_timeout_ms))
+        # 放场瞬间刚整页刷新过，预约须知/提交按钮可能还是 disabled 状态，
+        # prepareSubmit 会直接返回 terms-unchecked。什么都没提交，重试是安全的。
+        payload = {}
+        for attempt in range(1, 4):
+            payload = (self.submit(submit_timeout_ms, confirm_terms=True)
+                       if confirm_terms else self.submit(submit_timeout_ms))
+            reason = payload.get("reason")
+            if reason not in ("terms-unchecked", "terms-confirmation-failed", "submit-disabled"):
+                break
+            if attempt < 3:
+                logger.warning("提交按钮/预约须知未就绪（%s），%sms 后重试",
+                               reason, 300 * attempt)
+                time.sleep(0.3 * attempt)
         if payload.get("reason") == "captcha" and confirm_terms:
             logger.warning("平台要求验证码，暂停自动下单，请在预约页面完成验证")
             return BookingOutcome.UNKNOWN
