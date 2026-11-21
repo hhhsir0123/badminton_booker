@@ -320,6 +320,8 @@ class PeriodicScanningPipeline(BasePipeline):
                 "day": day,
                 "segments": [{"court": court, "slots": list(slots)} for court, slots in segments],
             }
+            self.logger.info("预订成功（订单已创建）：%s，进入支付等待",
+                             self._describe_booking(booking))
             self._notify_booking_success(booking)
             result = self._await_payment(booking)
             if result == "paid":
