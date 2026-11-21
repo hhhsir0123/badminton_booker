@@ -8,8 +8,8 @@ const DRAFT_KEY = 'bb.config.draft';
 // 场地是固定的：学院路校区羽毛球馆一共 10 片
 const COURTS = [
   '任意',
-  '训练馆1号', '训练馆2号', '训练馆3号', '训练馆4号',
   '气膜馆5号', '气膜馆6号',
+  '训练馆1号', '训练馆2号', '训练馆3号', '训练馆4号',
   '训练馆7号', '训练馆8号', '训练馆9号', '训练馆10号'
 ];
 
@@ -42,13 +42,38 @@ function numberValue(selector) {
   return raw === '' ? NaN : Number(raw);
 }
 
-function parseDays(text) {
-  return String(text)
-    .replace(/，/g, ',')
-    .split(',')
-    .map((token) => token.trim())
-    .filter((token) => token.length)
-    .map((token) => (/^-?\d+$/.test(token) ? Number(token) : NaN));
+function pollingDay(offset) {
+  const today = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Shanghai' }).format(new Date());
+  const day = new Date(today + 'T00:00:00Z');
+  day.setUTCDate(day.getUTCDate() + offset);
+  return day.toISOString().slice(0, 10);
+}
+
+function showPollSelections(container, key) {
+  const values = state.config.polling[key];
+  const group = $(container);
+  group.replaceChildren();
+  values.forEach((value) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'secondary';
+    button.textContent = value + ' ×';
+    button.setAttribute('aria-label', '移除 ' + value);
+    button.addEventListener('click', () => {
+      state.config.polling[key] = values.filter((item) => item !== value);
+      showPollSelections(container, key);
+      markDirty();
+    });
+    group.appendChild(button);
+  });
+}
+
+function addPollSelection(container, key, value) {
+  if (!value) return;
+  const polling = state.config.polling;
+  polling[key] = [...new Set([...polling[key], value])].sort();
+  showPollSelections(container, key);
+  markDirty();
 }
 
 // ------------------------------------------------------------------ 表单
@@ -138,7 +163,21 @@ function render() {
   $('#date').value = booking.booking_date || '';
   $('#offset').value = booking.booking_days_ahead;
   $('#interval').value = polling.polling_interval;
-  $('#days').value = (polling.polling_date_offsets || []).join(', ');
+  if (!Array.isArray(polling.polling_dates)) {
+    polling.polling_dates = polling.polling_date ? [polling.polling_date]
+      : [...new Set((polling.polling_date_offsets || [0]).map(pollingDay))].sort();
+  }
+  $('#poll-date').min = pollingDay(0);
+  showPollSelections('#poll-dates', 'polling_dates');
+  if (!Array.isArray(polling.polling_courts)) polling.polling_courts = [];
+  showPollSelections('#poll-courts', 'polling_courts');
+  const pollCourt = $('#poll-court');
+  if (pollCourt) {
+    pollCourt.replaceChildren(new Option('全部场地', ''));
+    COURTS.filter((court) => court !== '任意').forEach((court) => {
+      pollCourt.add(new Option(court, court));
+    });
+  }
   $('#username').value = config.user.username || '';
   $('#password').value = config.user.password || '';
   $('#partner').value = config.user.partner_name || '';
@@ -146,13 +185,15 @@ function render() {
   $('#tts-user').value = tts.username || '';
   $('#tts-pass').value = tts.password || '';
   $('#tts-type').value = tts.type_id || 43;
-  $('#poll-slots').value = (polling.polling_time_slots || []).join(', ');
+  const [rangeStart, rangeEnd] = String(polling.polling_time_range || '19:00-21:00').split('-');
+  $('#poll-start-hour').value = rangeStart;
+  $('#poll-end-hour').value = rangeEnd;
+  $('#poll-hours').value = String(polling.polling_hours === 2 ? 2 : 1);
   $('#auto-booking').checked = Boolean(polling.is_auto_booking);
   $('#attempts').value = booking.max_attempts;
   $('#partial').checked = Boolean(booking.allow_partial);
   $('#fallback').checked = Boolean(booking.fallback_any);
   $('#probe').value = config.runtime.release_probe_interval_ms;
-  $('#keep').value = config.runtime.keep_open_after_success;
   $('#webhook').value = config.feishu.webhook || '';
   $('#secret').value = config.feishu.secret || '';
   $('#mention-all').checked = Boolean(config.feishu.mention_all);
@@ -225,11 +266,8 @@ function applyForm() {
     end: row.querySelector('select[name="end"]').value
   }));
   config.polling.polling_interval = numberValue('#interval');
-  config.polling.polling_date_offsets = parseDays($('#days').value);
-  config.polling.polling_time_slots = $('#poll-slots').value
-    .split(',')
-    .map((item) => item.trim())
-    .filter((item) => item.length);
+  config.polling.polling_time_range = `${$('#poll-start-hour').value}-${$('#poll-end-hour').value}`;
+  config.polling.polling_hours = Number($('#poll-hours').value) === 2 ? 2 : 1;
   config.polling.is_auto_booking = $('#auto-booking').checked;
   config.user.username = $('#username').value.trim();
   config.user.password = $('#password').value;
@@ -244,7 +282,6 @@ function applyForm() {
     timeout_seconds: previousTts.timeout_seconds || 20
   };
   config.runtime.release_probe_interval_ms = numberValue('#probe');
-  config.runtime.keep_open_after_success = numberValue('#keep');
   config.feishu.webhook = $('#webhook').value.trim();
   config.feishu.secret = $('#secret').value.trim();
   config.feishu.mention_all = $('#mention-all').checked;
@@ -420,6 +457,20 @@ async function api(path, options) {
   return data;
 }
 
+function pollingBrief(summary) {
+  if (!summary || typeof summary !== "object") return "";
+  const parts = [];
+  if (summary.rounds) parts.push(`第 ${summary.rounds} 轮`);
+  const available = summary.available || {};
+  const days = Object.keys(available);
+  if (days.length) {
+    const total = days.reduce((sum, day) => sum + (Number(available[day]) || 0), 0);
+    parts.push(`空场 ${total} 处`);
+  }
+  if (summary.next_scan_at) parts.push(`下次 ${String(summary.next_scan_at).slice(11, 19)}`);
+  return parts.join(" · ");
+}
+
 function applyStatus(status) {
   const running = status.state === "running";
   const mode = status.mode || "";
@@ -438,9 +489,11 @@ function applyStatus(status) {
   grabState.dataset.state = gk;
   pollState.textContent = pt;
   pollState.dataset.state = pk;
-  if (status.message) {
+  if (running && mode === "poll") {
+    $("#poll-hint").textContent = [status.message, pollingBrief(status.summary)]
+      .filter(Boolean).join(" · ");
+  } else if (status.message) {
     if (running && mode === "grab") $("#grab-hint").textContent = status.message;
-    if (running && mode === "poll") $("#poll-hint").textContent = status.message;
     if (!running) {
       $("#grab-hint").textContent = status.message;
       $("#poll-hint").textContent = status.message;
@@ -609,6 +662,35 @@ function bind() {
 
   $('#start').addEventListener('click', () => startRun('grab'));
   $('#stop').addEventListener('click', stopRun);
+  ['#poll-start-hour', '#poll-end-hour'].forEach((selector) => {
+    const select = $(selector);
+    HOURS.forEach((hour) => select.add(new Option(hour, hour)));
+    select.add(new Option('23:00', '23:00'));
+  });
+  $('#poll-start-hour').value = '19:00';
+  $('#poll-end-hour').value = '21:00';
+  ['#poll-start-hour', '#poll-end-hour', '#poll-hours'].forEach((selector) => {
+    $(selector).addEventListener('change', () => { applyForm(); markDirty(); });
+  });
+  $('#add-poll-date').addEventListener('click', () => {
+    const picker = $('#poll-date');
+    if (picker.reportValidity()) addPollSelection('#poll-dates', 'polling_dates', picker.value);
+  });
+
+  $('#add-poll-court').addEventListener('click', () => {
+    const select = $('#poll-court');
+    const value = select.value || '全部场地';
+    if (value === '全部场地') {
+      // 「全部场地」是互斥项：选它就清掉具体场地
+      state.config.polling.polling_courts = ['全部场地'];
+    } else {
+      const rest = (state.config.polling.polling_courts || []).filter((item) => item !== '全部场地');
+      state.config.polling.polling_courts = [...new Set([...rest, value])].sort();
+    }
+    showPollSelections('#poll-courts', 'polling_courts');
+    markDirty();
+    select.value = '';
+  });
   $('#poll-start').addEventListener('click', () => startRun('poll'));
   $('#poll-stop').addEventListener('click', stopRun);
   $('#save').addEventListener('click', saveToProgram);

@@ -74,6 +74,16 @@ class PayloadTest(unittest.TestCase):
         self.assertIn("训练馆3号", body)
         self.assertIn("张三", body)
 
+    def test_success_card_reminds_payment_window(self):
+        store = []
+        notifier = FeishuNotifier(WEBHOOK, opener=recording_opener({"code": 0}, store))
+        notifier.send_booking_success("2026-11-21", "训练馆3号", ["19:00-20:00"])
+        card = store[0]["card"]
+        body = card["elements"][0]["text"]["content"]
+        self.assertIn("15 分钟", body)
+        self.assertIn("支付", body)
+        self.assertIn("15 分钟", json.dumps(card, ensure_ascii=False))
+
     def test_mention_all_in_card(self):
         store = []
         notifier = FeishuNotifier(WEBHOOK, mention_all=True, opener=recording_opener({"code": 0}, store))

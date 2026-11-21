@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from .booking_result import BookingOutcome
 from .court_query import QueryManager
@@ -55,12 +55,13 @@ class BookingManager:
             except Exception as error:  # noqa: BLE001
                 logger.warning("占场验证码处理异常: %s", error)
 
+        # 「取消」在没有已选场格时会退出预约页。
+        if not self.clear_selection():
+            return {"status": "error", "detail": "selection-clear-failed"}
+
         if not self.query.ensure_visible(court):
             logger.warning("场地 %s 不在当前页且翻页未找到", court)
             return {"status": "unavailable", "detail": "court-not-found"}
-
-        # 换候选前先清空上一次的选择，避免残留场次被一起提交
-        self.clear_selection()
 
         targets = [{"court": court, "slot": slot} for slot in slots]
         payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets) or {}
@@ -85,7 +86,8 @@ class BookingManager:
         if failed and not selected:
             # 有些前端选中后不会改场格 class，而是把提交按钮点亮。
             # 用「提交按钮是否可用」兜底，避免把已选中的场次误判为不可用。
-            if self._submit_ready():
+            if (all(item.get("ok") for item in failed) and self._submit_ready()
+                    and self._selected_matches(court, slots, require_details=True)):
                 logger.info("场格 class 没有变化，但提交按钮已可用，按已选中处理")
                 return {"status": "selected", "detail": []}
             detail = failed[0].get("error") or ",".join(
@@ -103,21 +105,109 @@ class BookingManager:
             return {"status": "mismatch", "detail": "selected-list-mismatch"}
         return {"status": "selected", "detail": selected}
 
+    def select_segments(self, segments: List[Tuple[str, List[str]]]) -> Dict:
+        """一次选中多个场地的场格（可跨场地），返回 {status, detail}。
+
+        跨场地时先切到 A 场所在页选中，再切到 B 场选中；Vue 的「已选」是全局状态，
+        翻页不会丢。选完一次提交即可，平台按一张单处理。
+        """
+        if self.captcha_solver is not None:
+            try:
+                if not self.captcha_solver.solve():
+                    logger.error("占场验证码未通过，放弃本次选场")
+                    return {"status": "error", "detail": "captcha"}
+            except Exception as error:  # noqa: BLE001
+                logger.warning("占场验证码处理异常: %s", error)
+
+        if not self.clear_selection():
+            return {"status": "error", "detail": "selection-clear-failed"}
+
+        selected: List[str] = []
+        failed: List[Dict] = []
+        for court, slots in segments:
+            if not self.query.ensure_visible(court):
+                logger.warning("场地 %s 不在当前页且翻页未找到", court)
+                return {"status": "unavailable", "detail": f"court-not-found:{court}"}
+            targets = [{"court": court, "slot": slot} for slot in slots]
+            payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets) or {}
+            if not payload.get("ok") and payload.get("error") == "no-helpers":
+                self.query.install()
+                payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets) or {}
+            for item in payload.get("results") or []:
+                if item.get("ok") and (item.get("changed") or "selected" in (item.get("classes") or [])):
+                    selected.append(item.get("slot"))
+                else:
+                    failed.append(item)
+
+        if failed and not selected:
+            if (all(item.get("ok") for item in failed) and self._submit_ready()
+                    and self._selected_matches_segments(segments, require_details=True)):
+                logger.info("场格 class 没有变化，但提交按钮已可用，按已选中处理")
+                return {"status": "selected", "detail": []}
+            detail = failed[0].get("error") or ",".join(item.get("slot", "?") for item in failed)
+            logger.warning("选中失败: %s", detail)
+            return {"status": "unavailable", "detail": detail}
+        if failed:
+            logger.warning("部分场格没有选中: %s", [item.get("slot") for item in failed])
+            return {"status": "partial", "detail": selected, "failed": failed}
+
+        if not self._selected_matches_segments(segments):
+            logger.warning("页面「已选」与候选不一致（%s），不提交", segments)
+            return {"status": "mismatch", "detail": "selected-list-mismatch"}
+        return {"status": "selected", "detail": selected}
+
+    def _selected_matches_segments(self, segments, require_details: bool = False) -> bool:
+        """底部「已选」有的版本只显示金额，不写场地/时段明细。
+
+        没有明细可比对时不做判断（和单场地的 _selected_matches 一致），
+        只有页面明确写了场地、却和候选对不上时才拦。
+        """
+        try:
+            text = str(self.driver.execute_script(SELECTED_TEXT_JS) or "").strip()
+        except Exception:  # noqa: BLE001
+            return not require_details
+        if not text:
+            return not require_details
+        courts = [court for court, _ in segments if court]
+        mentioned = [court for court in courts if court in text]
+        if not mentioned:
+            return not require_details
+        missing = [court for court in courts if court not in text]
+        if missing:
+            logger.warning("已选里缺场地: %s", missing)
+            return False
+        return all(slot in text for court, slots in segments for slot in slots)
+
     def clear_selection(self) -> bool:
-        """点掉底部的「取消」，清空已选场次。"""
+        """只清理已选场格，并确认仍在同一张预约表。"""
         try:
             from selenium.webdriver.common.by import By
 
+            selected = ".reserveBlock.selected, .reserveBlock.active"
+            if not self.driver.execute_script(
+                "return Boolean(document.querySelector(arguments[0]));", selected
+            ):
+                return True
+
+            wanted = self.query.last_date
             button = self.driver.find_element(
                 By.CSS_SELECTOR, ".submit_order_box .action .btn.cancel"
             )
             self.driver.execute_script("arguments[0].click();", button)
-            time.sleep(0.2)
-            return True
+            return self.query._wait_false(
+                lambda _: (
+                    (not wanted or self.query.is_active(wanted))
+                    and self.query.snapshot()
+                    and not self.driver.execute_script(
+                        "return Boolean(document.querySelector(arguments[0]));", selected
+                    )
+                ),
+                2,
+            )
         except Exception:  # noqa: BLE001
             return False
 
-    def _selected_matches(self, court: str, slots: List[str]) -> bool:
+    def _selected_matches(self, court: str, slots: List[str], require_details: bool = False) -> bool:
         """读页面底部的「已选」文案核对；页面没写明细时不做判断，退回场格 class。
 
         只有页面明确写了「场地/时段」时才核对，避免因为拿不到文案而误伤正常下单。
@@ -125,27 +215,17 @@ class BookingManager:
         try:
             text = str(self.driver.execute_script(SELECTED_TEXT_JS) or "").strip()
         except Exception:  # noqa: BLE001
-            return True
-        if not text:
-            return True
+            return not require_details
         has_court = bool(court) and court in text
-        has_slot = any(slot in text for slot in slots)
-        if not has_court and not has_slot:
-            # 文案里没有任何明细，无法核对，交给场格 class
-            return True
-        return has_court and has_slot
+        has_slot = [slot in text for slot in slots]
+        if not has_court and not any(has_slot):
+            return not require_details
+        return has_court and all(has_slot)
 
     def _submit_ready(self) -> bool:
         try:
             return bool(self.driver.execute_script(
-                """
-                const scope = document.querySelector('.submit_order_box.pc')
-                    || document.querySelector('.submit_order_box');
-                if (!scope) { return false; }
-                const button = scope.querySelector('.btn') || scope.querySelector('button');
-                if (!button) { return false; }
-                return String(button.className || '').indexOf('disabled') < 0;
-                """
+                "return Boolean(window.__bb && window.__bb.submitEnabled(window.__bb.submitButton()));"
             ))
         except Exception:  # noqa: BLE001
             return False
@@ -181,8 +261,8 @@ class BookingManager:
 
     # ------------------------------------------------------------- 提交
 
-    def submit(self, timeout_ms: int = 6000) -> Dict:
-        return self.driver.execute_async_script(SUBMIT_JS, int(timeout_ms)) or {
+    def submit(self, timeout_ms: int = 6000, *, confirm_terms: bool = False) -> Dict:
+        return self.driver.execute_async_script(SUBMIT_JS, int(timeout_ms), confirm_terms) or {
             "ok": False, "reason": "no-result"
         }
 
@@ -228,6 +308,8 @@ class BookingManager:
         is_click_parter: bool = False,
         submit_timeout_ms: int = 6000,
         allow_partial: bool = False,
+        *,
+        confirm_terms: bool = False,
     ) -> BookingOutcome:
         """提交一次预约，返回平台回执判定。"""
         partner_names = partner_names or []
@@ -254,9 +336,16 @@ class BookingManager:
         if is_click_parter or partner_names:
             self.click_partner(partner_names)
 
-        payload = self.submit(submit_timeout_ms)
+        payload = (self.submit(submit_timeout_ms, confirm_terms=True)
+                   if confirm_terms else self.submit(submit_timeout_ms))
+        if payload.get("reason") == "captcha" and confirm_terms:
+            logger.warning("平台要求验证码，暂停自动下单，请在预约页面完成验证")
+            return BookingOutcome.UNKNOWN
         if payload.get("reason") == "captcha":
             payload = self._solve_captcha_and_wait(submit_timeout_ms)
+        if payload.get("reason") in ("terms-unchecked", "terms-confirmation-failed"):
+            logger.warning("已选中场地，但预约须知或提交按钮状态未就绪，订单未提交")
+            return BookingOutcome.UNKNOWN
         outcome = self._verdict(payload)
         if outcome is BookingOutcome.UNKNOWN:
             self._snapshot_unknown()

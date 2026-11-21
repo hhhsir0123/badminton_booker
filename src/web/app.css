@@ -628,3 +628,7 @@ label.invalid select:focus {
   font-size: 11.5px;
   font-weight: 600;
 }
+
+[data-panel="poll"] .fields > .wide {
+  grid-column: 1 / -1;
+}
