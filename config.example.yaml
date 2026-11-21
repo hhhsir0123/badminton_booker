@@ -49,12 +49,19 @@ login:
 polling:
   # 空场轮询间隔（秒）
   polling_interval: 60
-  # 想盯的时段，空列表表示不做筛选
-  polling_time_slots:
-    - "19:00-20:00"
+  # 关注时间段：在这个区间里找连续空场（整点，结束时间不含）
+  polling_time_range: "15:00-21:00"
+  # 连续小时数：1 或 2（同一场地优先，凑不齐允许跨场地拼）
+  polling_hours: 2
+  # 关注场地，空列表 = 全部（本项目只处理羽毛球）
+  polling_courts:
+    - "气膜馆5号"
+    - "气膜馆6号"
   # 查询今天 + 未来几天的偏移
   polling_date_offsets: [0, 1, 2]
-  # 轮询发现空场后是否自动下单
+  # 轮询发现空场后是否自动下单（抢占式）：
+  #   true  → 当轮选场 → 提交 → 验证码弹出后现场识别 → 带 token 提交
+  #   抢到即结束轮询；验证码连续失败会自动停手，避免触发平台失败锁
   is_auto_booking: false
 
 # 飞书群机器人：群里「添加机器人 → 自定义机器人」拿到 webhook 填进来即可
@@ -84,8 +91,6 @@ runtime:
   grid_refresh: "auto"
   # 等待平台回执的最长时间（毫秒）
   submit_timeout_ms: 6000
-  # 抢到之后浏览器保持打开的秒数（订单需要在同一个窗口付款）
-  keep_open_after_success: 600
 
 captcha:
   # 点选验证码识别来源：local（本地 OCR）或 ttshitu（图鉴打码平台，typeid=20）

@@ -33,6 +33,8 @@ class ScriptDriver:
 
     def execute_script(self, script, *args):
         self.scripts.append(script)
+        if "Boolean(document.querySelector(arguments[0]))" in script:
+            return False
         if isinstance(self.script_result, str):
             return self.script_result
         return self.script_result

@@ -360,20 +360,23 @@ class SubmitCaptchaFlow:
             logger.warning("读取提交表单失败: %s", error)
             return None
 
-    def click_submit_button(self) -> bool:
-        """用 Selenium 原生点击"提交"（触发 doVerify 并填充 submitForm）。"""
-        try:
-            from selenium.webdriver.common.by import By
+    def click_submit_button(self, confirm_terms: bool = True) -> bool:
+        """勾选预约须知并点"提交"，触发 doVerify 并填充 submitForm。
 
-            button = self.driver.find_element(
-                By.CSS_SELECTOR, ".submit_order_box .action .btn:not(.cancel)"
-            )
-            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
-            button.click()
-            return True
+        不用 Selenium 原生 click：按钮上常有浮层，会被 element click intercepted；
+        按钮在没勾须知时也是 disabled 的，prepareSubmit 会先勾上再等它可用。
+        """
+        from .page_js import CLICK_SUBMIT_JS
+
+        try:
+            result = self.driver.execute_async_script(CLICK_SUBMIT_JS, confirm_terms) or {}
         except Exception as error:  # noqa: BLE001
             logger.warning("点击提交按钮失败: %s", error)
             return False
+        if result.get("ok"):
+            return True
+        logger.warning("提交按钮不可点：%s", result.get("reason") or result)
+        return False
 
     def submit_selected(self, overrides: Optional[Dict[str, object]] = None) -> bool:
         """选场之后：点提交唤起验证码 → 读表单 → 用预解 token 直接提交。"""
@@ -390,9 +393,13 @@ class SubmitCaptchaFlow:
         merged.update(overrides or {})
         return self.submit(merged)
 
-    def wait_success(self, timeout: float = 6.0) -> bool:
-        """提交后等页面出现「提交预约成功」或其他结果提示。"""
-        deadline = time.monotonic() + timeout
+    def wait_outcome(self, timeout: float = 6.0) -> str:
+        """提交后判定结果：created / rejected / unknown。
+
+        只读页面提示，不再发第二次请求。拿不到明确提示就返回 unknown，
+        宁可让用户核对订单，也不自动重试造成重复下单。
+        """
+        deadline = time.monotonic() + max(0.5, timeout)
         while time.monotonic() < deadline:
             try:
                 text = self.driver.execute_script(
@@ -401,12 +408,147 @@ class SubmitCaptchaFlow:
             except Exception:  # noqa: BLE001
                 time.sleep(0.2)
                 continue
-            if "提交预约成功" in text:
-                return True
-            if "失败" in text or "已满" in text or "不可预约" in text:
-                return False
+            if any(hint in text for hint in ("提交预约成功", "待支付", "去支付")):
+                return "created"
+            if any(hint in text for hint in ("失败", "已满", "不可预约", "已被抢")):
+                return "rejected"
             time.sleep(0.2)
+        return "unknown"
+
+    def wait_success(self, timeout: float = 6.0) -> bool:
+        """提交后等页面出现「提交预约成功」或其他结果提示。"""
+        return self.wait_outcome(timeout) == "created"
+
+    def solve_after_submit(self, max_tries: int = 3) -> Optional[PreSolvedCaptcha]:
+        """提交后现场解：先把 verifySuccess 拦下来，解出 token 再由调用方提交。
+
+        重试只针对「没认出来」：换一张图再识别，不计平台失败次数。
+        一旦点了但没通过，就不再点第二下——AJ-Captcha 点错会累计失败并锁 get 接口。
+        """
+        if not self.patch():
+            logger.warning("页面结构不符合预期，无法拦截验证码回调")
+            return None
+        if not (self.read() or {}).get("image"):
+            if not self.open():
+                logger.info("打不开验证码（可能要等提交时才出现）")
+                return None
+            deadline = time.monotonic() + 3
+            while not (self.read() or {}).get("image"):
+                if time.monotonic() >= deadline:
+                    logger.warning("等待验证码图片超时")
+                    return None
+                time.sleep(0.05)
+
+        tries = max(1, int(max_tries))
+        for attempt in range(1, tries + 1):
+            data = self.read()
+            if not data or not data.get("image"):
+                logger.warning("第 %s/%s 次没拿到验证码图片", attempt, tries)
+                return None
+            import base64
+
+            png = base64.b64decode(data["image"].split(",", 1)[-1])
+            started = time.monotonic()
+            points = self.solver.solve(png, data.get("words") or []) if self.solver else None
+            if not points:
+                # 没认出来就还没点，换图不会计入平台失败次数
+                logger.warning("第 %s/%s 次没认出来（%sms），换一张",
+                               attempt, tries, int((time.monotonic() - started) * 1000))
+                self._refresh()
+                time.sleep(0.8)
+                continue
+            if not self.click(points):
+                return None
+            time.sleep(0.6)
+            captured = self.captured()
+            if captured:
+                captured.solved_at = time.time()
+                self.presolved = captured
+                logger.info("验证码已解开（%sms）", int((time.monotonic() - started) * 1000))
+                return captured
+            logger.warning("点击后没有拿到 token：可能点错，不再重试以免触发失败锁")
+            return None
+        return None
+
+    def has_captcha(self, timeout: float = 0.0) -> bool:
+        """页面上有没有正在等待点选的验证码。"""
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            if (self.read() or {}).get("image"):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.05)
+
+    def solve_submit_captcha(self, max_tries: int = 3, timeout: float = 5.0) -> bool:
+        """点完提交后现场解：只点坐标，不拦截 verifySuccess，让平台自己校验并提交。
+
+        重试只针对「没认出来」：换图再识别，不计平台失败次数。
+        一旦点了坐标就不再点第二下（点错会计失败并锁接口）。
+        """
+        deadline = time.monotonic() + max(0.5, timeout)
+        while not (self.read() or {}).get("image"):
+            if time.monotonic() >= deadline:
+                logger.warning("等验证码图片超时")
+                return False
+            time.sleep(0.05)
+        # 验证码组件刚弹出时会先画一帧再稳定；太快点坐标会整体偏移，
+        # 平台返回「验证码非法校验」。实测停 1.2s 后通过率正常。
+        time.sleep(1.2)
+        tries = max(1, int(max_tries))
+        for attempt in range(1, tries + 1):
+            data = self.read()
+            if not data or not data.get("image"):
+                return False
+            import base64
+
+            png = base64.b64decode(data["image"].split(",", 1)[-1])
+            started = time.monotonic()
+            points = self.solver.solve(png, data.get("words") or []) if self.solver else None
+            if not points:
+                logger.warning("第 %s/%s 次没认出来（%sms），换一张",
+                               attempt, tries, int((time.monotonic() - started) * 1000))
+                self._refresh()
+                time.sleep(0.8)
+                continue
+            if not self.click(points):
+                return False
+            logger.info("验证码已点击（%sms），等平台校验并提交", int((time.monotonic() - started) * 1000))
+            return True
         return False
+
+    # ------------------------------------------------------------- 下单响应
+
+    def order_mark(self) -> int:
+        """记录提交前页面已经收到的下单响应条数。"""
+        try:
+            return int(self.driver.execute_script(
+                "return (window.__bb && window.__bb.orderResponses || []).length;") or 0)
+        except Exception:  # noqa: BLE001
+            return 0
+
+    def order_response(self, mark: int = 0) -> Optional[Dict]:
+        """非阻塞读：本次提交之后有没有新的下单响应。"""
+        try:
+            items = self.driver.execute_script(
+                "return (window.__bb && window.__bb.orderResponses) || [];") or []
+        except Exception:  # noqa: BLE001
+            return None
+        return items[-1] if len(items) > mark else None
+
+    def wait_order_response(self, mark: int, timeout: float = 6.0) -> Optional[Dict]:
+        """等本次提交的接口响应：比页面 toast 可靠，能直接看到平台为什么拒绝。"""
+        deadline = time.monotonic() + max(0.5, timeout)
+        while time.monotonic() < deadline:
+            try:
+                items = self.driver.execute_script(
+                    "return (window.__bb && window.__bb.orderResponses) || [];") or []
+            except Exception:  # noqa: BLE001
+                items = []
+            if len(items) > mark:
+                return items[-1]
+            time.sleep(0.2)
+        return None
 
     # ------------------------------------------------------------- 现场兜底
 

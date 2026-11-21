@@ -121,6 +121,30 @@ class BasePipeline(ABC):
             self.logger.warning("验证码预热失败: %s", error)
         return True
 
+    def _build_submit_flow(self):
+        """构建「下单验证码」预解组件：本地点选 OCR 或图鉴打码。
+
+        抢票和轮询都要用它：先把验证码解成 token，选好场后直接带 token 提交，
+        省掉 07:00 / 抢空场时现场识别的那一两秒。
+        """
+        from ..core.submit_captcha import SubmitCaptchaFlow
+        from ..utils.click_word_solver import ClickWordSolver
+
+        provider = None
+        source = str(self.config.get("captcha.provider", "local") or "local").lower()
+        fallback = bool(self.config.get("captcha.fallback_to_local", True))
+        if source == "ttshitu":
+            from ..utils.ttshitu_provider import TTShituProvider
+
+            provider = TTShituProvider.from_config(self.config)
+            provider.check_credentials()
+        elif source != "local":
+            raise ValueError(f"不支持的验证码识别方式: {source}")
+        solver = ClickWordSolver(provider=provider, fallback_to_local=fallback)
+        if (provider is None or fallback) and not solver.warmup():
+            raise RuntimeError("本地点选验证码模型未就绪")
+        return SubmitCaptchaFlow(self.browser.driver, solver)
+
     def cleanup(self):
         browser = getattr(self, "browser", None)
         if browser:
@@ -159,12 +183,34 @@ class BasePipeline(ABC):
                 valid.append((court, times))
         return valid
 
+    def _book_candidate(
+        self,
+        court: str,
+        slots: List[str],
+        partners: List[str],
+        *,
+        allow_partial: bool = False,
+        confirm_terms: bool = False,
+    ) -> BookingOutcome:
+        """共用普通页面下单入口，由上层决定日期和候选。"""
+        return self.booking_manager.book_court(
+            court_name=court,
+            time_slots=slots,
+            partner_names=partners,
+            is_click_parter=bool(partners),
+            submit_timeout_ms=int(self.config.get("runtime.submit_timeout_ms", 6000)),
+            allow_partial=allow_partial,
+            confirm_terms=confirm_terms,
+        )
+
     def _process_bookings(
         self,
         valid_courts: List[Tuple[str, List[str]]],
         aim_time_slots: Optional[List[str]] = None,
         is_click_parter: bool = False,
         partner_name: str = "",
+        *,
+        slot_labels: Optional[Dict[str, Dict[str, str]]] = None,
     ) -> List[Tuple[str, List[str]]]:
         """按顺序尝试预订，成功后停止。"""
         aim_time_slots = aim_time_slots or []
@@ -173,11 +219,12 @@ class BasePipeline(ABC):
 
         for court, times in valid_courts:
             slots = [slot for slot in aim_time_slots if slot in times] or list(times)
-            outcome = self.booking_manager.book_court(
-                court_name=court,
-                time_slots=slots,
-                partner_names=partners if is_click_parter else [],
-                is_click_parter=bool(is_click_parter and partners),
+            labels = (slot_labels or {}).get(court, {})
+            outcome = self._book_candidate(
+                court,
+                [labels.get(slot, slot) for slot in slots],
+                partners if is_click_parter else [],
+                confirm_terms=True,
             )
             if outcome is BookingOutcome.CREATED:
                 booked.append((court, slots))

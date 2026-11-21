@@ -132,7 +132,6 @@
       <div class="fields">
         <label>最多提交次数<input id="attempts" type="number" min="1" max="10" step="1"><small>平台有频控，建议 2~3</small></label>
         <label>放场探测间隔（毫秒）<input id="probe" type="number" min="50" max="1000" step="10"><small>太小容易触发频控</small></label>
-        <label>抢到后浏览器保留（秒）<input id="keep" type="number" min="0" max="3600" step="10"><small>用于付款</small></label>
         <label class="switch">只抢到部分时段也提交<input id="partial" type="checkbox"></label>
         <label class="switch">候选都不满足时抢任意空场<input id="fallback" type="checkbox"><small>保底：当天最早的一段</small></label>
       </div>
@@ -157,18 +156,43 @@
       </div>
       <div class="fields">
         <label>轮询间隔（秒）<input id="interval" type="number" min="5" max="3600" step="1" required></label>
-        <label>查询日期偏移<input id="days" type="text" required placeholder="0, 1, 2"><small>以当天为 0，多天用逗号分隔</small></label>
-        <label class="wide">关注时段
-          <input id="poll-slots" type="text" placeholder="19:00-20:00, 20:00-21:00">
-          <small>留空表示不限制时段；多段用逗号分隔</small>
-        </label>
-        <label class="switch">发现空场自动下单<input id="auto-booking" type="checkbox"><small>不勾选时只发通知</small></label>
+        <div class="wide">
+          <label for="poll-date">查询日期</label>
+          <div class="row-buttons">
+            <input id="poll-date" type="date">
+            <button id="add-poll-date" type="button" class="secondary">添加日期</button>
+          </div>
+          <div id="poll-dates" class="row-buttons" aria-live="polite"></div>
+        </div>
+        <div class="wide">
+          <label>关注时间段 + 连续小时数</label>
+          <div class="row-buttons">
+            <select id="poll-start-hour" aria-label="开始时间"></select>
+            <span>至</span>
+            <select id="poll-end-hour" aria-label="结束时间"></select>
+            <select id="poll-hours" aria-label="连续小时数">
+              <option value="1">连续 1 小时</option>
+              <option value="2">连续 2 小时</option>
+            </select>
+          </div>
+          <small>在时间段内找连续空场：优先同一场地；同一场地凑不齐时，允许跨场地拼成连续时段。</small>
+        </div>
+        <div class="wide">
+          <label for="poll-court">关注场地</label>
+          <div class="row-buttons">
+            <select id="poll-court" aria-label="选择场地"></select>
+            <button id="add-poll-court" type="button" class="secondary">添加场地</button>
+          </div>
+          <div id="poll-courts" class="row-buttons" aria-live="polite"></div>
+          <small>下拉里选「全部场地」= 不限制；只添加了具体场地时，只判断这些场地。</small>
+        </div>
+        <label class="switch">发现空场自动下单<input id="auto-booking" type="checkbox"><small>勾选后：查到空场 → 现场解验证码 → 立即提交 → 抢到即停止；不勾选只发通知</small></label>
       </div>
 
       <div class="tab-actions">
         <div>
           <h3>开始轮询</h3>
-          <p class="hint" id="poll-hint">按间隔扫描空场，发现后通知（或自动下单）。</p>
+          <p class="hint" id="poll-hint">按间隔扫描空场；开启自动下单时，发现空场当轮就解验证码并提交。</p>
         </div>
         <div class="row-buttons">
           <output id="poll-state" class="state">未运行</output>

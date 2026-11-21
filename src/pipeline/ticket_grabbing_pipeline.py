@@ -614,10 +614,7 @@ class TicketGrabbingPipeline(BasePipeline):
                     self._note(state="done", outcome="created", message="平台已建单（预解验证码），请及时付款")
                     self.logger.info("预订成功（预解）：%s %s（%sms）", court, ", ".join(slots), elapsed)
                     self._notify(play_day, court, slots)
-                    keep_open = int(self.config.get("runtime.keep_open_after_success", 600) or 0)
-                    if keep_open > 0:
-                        self.summary["keep_open_seconds"] = keep_open
-                        self._sleep(keep_open)
+                    # 订单要在同一个浏览器窗口里付款：这里不 quit，窗口留给用户
                     return True
                 if presolved_result == "unknown":
                     self._note(state="unknown", outcome="unknown",
@@ -626,14 +623,7 @@ class TicketGrabbingPipeline(BasePipeline):
                     self._notify_failure(f"{court} {'、'.join(slots)} 提交结果未知，请核对订单")
                     return False
                 self._presolve_fallback("预解路径未提交")
-            outcome = self.booking_manager.book_court(
-                court_name=court,
-                time_slots=slots,
-                partner_names=partners,
-                is_click_parter=bool(partners),
-                submit_timeout_ms=int(self.config.get("runtime.submit_timeout_ms", 6000)),
-                allow_partial=allow_partial,
-            )
+            outcome = self._book_candidate(court, slots, partners, allow_partial=allow_partial)
             elapsed = int((time.monotonic() - started) * 1000)
             self.last_outcome = outcome
             self.summary.setdefault("timings", {})[f"attempt_{index}_ms"] = elapsed
@@ -642,12 +632,7 @@ class TicketGrabbingPipeline(BasePipeline):
                 self._note(state="done", outcome="created", message="平台已建单，请及时付款")
                 self.logger.info("预订成功：%s %s（%sms）", court, ", ".join(slots), elapsed)
                 self._notify(play_day, court, slots)
-                # 订单要在同一个浏览器窗口里付款，别急着 quit
-                keep_open = int(self.config.get("runtime.keep_open_after_success", 600) or 0)
-                if keep_open > 0:
-                    self.summary["keep_open_seconds"] = keep_open
-                    self.logger.info("浏览器保持打开 %s 秒，请完成支付（停止任务可提前关闭）", keep_open)
-                    self._sleep(keep_open)
+                # 订单要在同一个浏览器窗口里付款：这里不 quit，窗口留给用户
                 return True
             if outcome is BookingOutcome.UNAVAILABLE:
                 self.logger.info("场格已被抢走，尝试下一个候选")

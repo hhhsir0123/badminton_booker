@@ -33,7 +33,9 @@ check('解析 config.example.yaml', () => {
   assert.equal(parsed.booking.preferences.length, 2);
   assert.deepEqual(parsed.booking.preferences[0], { court: '任意', start: '19:00', end: '21:00' });
   assert.deepEqual(parsed.polling.polling_date_offsets, [0, 1, 2]);
-  assert.deepEqual(parsed.polling.polling_time_slots, ['19:00-20:00']);
+  assert.equal(parsed.polling.polling_time_range, '15:00-21:00');
+  assert.equal(parsed.polling.polling_hours, 2);
+  assert.deepEqual(parsed.polling.polling_courts, ['气膜馆5号', '气膜馆6号']);
   assert.equal(parsed.user.password, '');
   assert.equal(parsed.login.auto_captcha, true);
   assert.equal(parsed.runtime.release_probe_interval_ms, 200);
@@ -81,11 +83,19 @@ check('归一化 + 生成 + 重新解析 往返一致', () => {
   assert.deepEqual(again, normalized);
 });
 
-check('空轮询时段也能生成合法 YAML', () => {
+check('关注时间段 + 连续小时数能生成合法 YAML', () => {
   const config = IO.defaults();
-  config.polling.polling_time_slots = [];
+  config.polling.polling_time_range = '18:00-22:00';
+  config.polling.polling_hours = 2;
   const parsed = IO.parse(IO.emit(config));
-  assert.deepEqual(parsed.polling.polling_time_slots, []);
+  assert.equal(parsed.polling.polling_time_range, '18:00-22:00');
+  assert.equal(parsed.polling.polling_hours, 2);
+  assert.deepEqual(IO.validate(IO.normalize(parsed)), []);
+});
+
+check('旧版 polling_time_slots 会折算成时间段', () => {
+  const normalized = IO.normalize(IO.parse('polling:\n  polling_time_slots:\n    - "15:00-16:00"\n    - "20:00-21:00"\n'));
+  assert.equal(normalized.polling.polling_time_range, '15:00-21:00');
 });
 
 check('旧版 preferred_time_slots 会转成候选', () => {

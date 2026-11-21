@@ -146,7 +146,8 @@ class FeishuNotifier:
         )
 
     def send_booking_success(
-        self, day: str, court: str, slots: List[str], partners: Optional[List[str]] = None
+        self, day: str, court: str, slots: List[str], partners: Optional[List[str]] = None,
+        pay_within_minutes: int = 15,
     ) -> bool:
         lines = [
             f"**日期**：{day}",
@@ -155,12 +156,13 @@ class FeishuNotifier:
         ]
         if partners:
             lines.append(f"**同伴**：{'、'.join(partners)}")
+        lines.append(f"**支付提醒**：请在 {pay_within_minutes} 分钟内完成支付，超时订单会被自动取消")
         return self._post(
             self._card(
                 "羽毛球预订成功",
                 "\n".join(lines),
                 BLUE,
-                "订单已生成，请在浏览器窗口里完成付款",
+                f"请立即付款，{pay_within_minutes} 分钟内有效",
             )
         )
 

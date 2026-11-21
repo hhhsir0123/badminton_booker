@@ -12,11 +12,14 @@ import copy
 import os
 import re
 import tempfile
+from datetime import date
 from typing import Any, Dict, List
 
 import yaml
 
 TIME_CLOCK = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+SLOT_RE = re.compile(r"^\s*(\d{1,2}:\d{2})\s*[-~～－]\s*(\d{1,2}:\d{2})\s*$")
+TIME_CLOCK_RANGE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$")
 TIME_CLOCK_SECONDS = re.compile(r"^([01]\d|2[0-3]):[0-5]\d:[0-5]\d$")
 
 
@@ -58,7 +61,12 @@ DEFAULTS: Dict[str, Any] = {
     },
     "polling": {
         "polling_interval": 60,
-        "polling_time_slots": [],
+        # 关注的时间段：在这个区间里找连续空场（整点）
+        "polling_time_range": "19:00-21:00",
+        # 连续小时数：只支持 1 或 2
+        "polling_hours": 1,
+        # 关注的场地（空列表 = 不限；本项目只处理羽毛球）
+        "polling_courts": [],
         "polling_date_offsets": [0, 1, 2],
         "is_auto_booking": False,
     },
@@ -112,8 +120,6 @@ DEFAULTS: Dict[str, Any] = {
         "grid_refresh": "auto",
         # 提交后等待平台回执的最长时间
         "submit_timeout_ms": 6000,
-        # 抢到之后浏览器保持打开的秒数（订单要在同一个窗口里付款）
-        "keep_open_after_success": 600,
     },
 }
 
@@ -209,14 +215,53 @@ def validate_config(data: Dict[str, Any]) -> List[str]:
     if not _is_int(interval) or not 5 <= interval <= 3600:
         errors.append("轮询间隔应为 5~3600 秒")
 
-    offsets = _get(data, "polling.polling_date_offsets")
-    if not isinstance(offsets, list) or not offsets:
-        errors.append("轮询日期偏移需要至少一个数字")
+    time_range = _get(data, "polling.polling_time_range")
+    if not isinstance(time_range, str) or not TIME_CLOCK_RANGE.match(time_range.strip()):
+        errors.append("关注时间段需要 HH:MM-HH:MM 格式，例如 19:00-21:00")
     else:
-        for offset in offsets:
-            if not _is_int(offset) or not 0 <= offset <= 30:
-                errors.append("轮询日期偏移应为 0~30 的整数")
-                break
+        start, end = time_range.strip().split("-")
+        if start >= end:
+            errors.append("关注时间段的结束时间要晚于开始时间")
+        elif not start.endswith(":00") or not end.endswith(":00"):
+            errors.append("关注时间段只支持整点")
+
+    hours = _get(data, "polling.polling_hours")
+    if hours not in (1, 2):
+        errors.append("连续小时数只支持 1 或 2")
+
+    polling_courts = _get(data, "polling.polling_courts")
+    if polling_courts is not None:
+        if not isinstance(polling_courts, list):
+            errors.append("关注场地应为列表")
+        else:
+            for item in polling_courts:
+                if not isinstance(item, str) or not item.strip():
+                    errors.append("关注场地不能为空")
+                    break
+
+    polling_dates = _get(data, "polling.polling_dates")
+    if polling_dates is not None:
+        if not isinstance(polling_dates, list) or not polling_dates:
+            errors.append("请至少选择一个轮询日期")
+        else:
+            for item in polling_dates:
+                try:
+                    value = str(item)
+                    if date.fromisoformat(value).isoformat() != value:
+                        raise ValueError
+                except ValueError:
+                    errors.append("轮询日期应为有效日期，格式为 YYYY-MM-DD")
+                    break
+
+    elif not _get(data, "polling.polling_date"):
+        offsets = _get(data, "polling.polling_date_offsets")
+        if not isinstance(offsets, list) or not offsets:
+            errors.append("轮询日期偏移需要至少一个数字")
+        else:
+            for offset in offsets:
+                if not _is_int(offset) or not 0 <= offset <= 30:
+                    errors.append("轮询日期偏移应为 0~30 的整数")
+                    break
 
     webhook = _get(data, "feishu.webhook", "")
     if webhook not in ("", None):
@@ -292,7 +337,20 @@ class Config:
         if not isinstance(loaded, dict):
             raise ValueError(f"配置文件格式错误，顶层应为字典: {self.config_path}")
         self.explicit = _flatten(loaded)
-        return deep_merge(DEFAULTS, loaded)
+        merged = deep_merge(DEFAULTS, loaded)
+        # 旧配置迁移：只写了 polling_time_slots 时，折算成「最早开始 ~ 最晚结束」的时间段
+        if "polling.polling_time_range" not in self.explicit:
+            legacy = ((loaded.get("polling") or {}).get("polling_time_slots") or [])
+            starts, ends = [], []
+            for item in legacy:
+                match = SLOT_RE.match(str(item))
+                if not match:
+                    continue
+                starts.append(match.group(1).zfill(5))
+                ends.append(match.group(2).zfill(5))
+            if starts and ends:
+                merged["polling"]["polling_time_range"] = f"{min(starts)}-{max(ends)}"
+        return merged
 
     def has_explicit(self, key: str) -> bool:
         """用户是否在 config.yaml 里显式写过这个键（区分默认值和显式配置）。"""

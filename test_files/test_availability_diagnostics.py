@@ -78,6 +78,7 @@ class DateRecoveryTest(unittest.TestCase):
         q._ensure_helpers = lambda: None
         q._async = lambda *args: True
         q._loaded_response = Mock(return_value=None)
+        q._wait_loaded_response = lambda wanted: q._loaded_response(wanted)
         q._click_tab = Mock(return_value={"ok": True, "ms": 12})
         def reload():
             if recover:

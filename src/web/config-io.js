@@ -358,16 +358,37 @@
 
     lines.push('polling:');
     lines.push('  polling_interval: ' + emitScalar(Number(polling.polling_interval || 60)));
-    const slots = polling.polling_time_slots || [];
-    if (!slots.length) {
-      lines.push('  polling_time_slots: []');
+    lines.push('  polling_time_range: ' + emitScalar(polling.polling_time_range || '19:00-21:00'));
+    lines.push('  polling_hours: ' + emitScalar(Number(polling.polling_hours || 1)));
+    if (!RANGE.test(String(polling.polling_time_range || ''))) {
+      errors.push('关注时间段需要 HH:MM-HH:MM 格式，例如 19:00-21:00');
     } else {
-      lines.push('  polling_time_slots:');
-      slots.forEach(function (slot) {
-        lines.push('    - ' + emitScalar(slot));
+      const parts = String(polling.polling_time_range).split('-');
+      if (parts[0] >= parts[1]) {
+        errors.push('关注时间段的结束时间要晚于开始时间');
+      } else if (!/:00$/.test(parts[0]) || !/:00$/.test(parts[1])) {
+        errors.push('关注时间段只支持整点');
+      }
+    }
+    if (polling.polling_hours !== 1 && polling.polling_hours !== 2) {
+      errors.push('连续小时数只支持 1 或 2');
+    }
+    if (Array.isArray(polling.polling_dates)) {
+      lines.push('  polling_dates: [' + polling.polling_dates.map(emitScalar).join(', ') + ']');
+    } else if (polling.polling_date) {
+      lines.push('  polling_date: ' + emitScalar(polling.polling_date));
+    } else {
+      lines.push('  polling_date_offsets: [' + (polling.polling_date_offsets || [0]).map(Number).join(', ') + ']');
+    }
+    const pollCourts = polling.polling_courts || [];
+    if (!pollCourts.length) {
+      lines.push('  polling_courts: []');
+    } else {
+      lines.push('  polling_courts:');
+      pollCourts.forEach(function (court) {
+        lines.push('    - ' + emitScalar(court));
       });
     }
-    lines.push('  polling_date_offsets: [' + (polling.polling_date_offsets || [0]).map(Number).join(', ') + ']');
     lines.push('  is_auto_booking: ' + emitScalar(Boolean(polling.is_auto_booking)));
     lines.push('');
 
@@ -387,7 +408,6 @@
     lines.push('  release_grace_ms: ' + emitScalar(Number(runtime.release_grace_ms || 4000)));
     lines.push('  grid_refresh: ' + emitScalar(runtime.grid_refresh || 'auto'));
     lines.push('  submit_timeout_ms: ' + emitScalar(Number(runtime.submit_timeout_ms || 6000)));
-    lines.push('  keep_open_after_success: ' + emitScalar(Number(runtime.keep_open_after_success || 600)));
     lines.push('');
 
     lines.push('captcha:');
@@ -438,7 +458,9 @@
       },
       polling: {
         polling_interval: 60,
-        polling_time_slots: ['19:00-20:00'],
+        polling_time_range: '19:00-21:00',
+        polling_hours: 1,
+        polling_courts: [],
         polling_date_offsets: [0, 1, 2],
         is_auto_booking: false
       },
@@ -458,7 +480,6 @@
         release_grace_ms: 4000,
         grid_refresh: 'auto',
         submit_timeout_ms: 6000,
-        keep_open_after_success: 600
       },
       captcha: {
         // local = 只用本地 OCR；ttshitu = 图鉴打码（type_id 43 传目标词，最准）
@@ -478,6 +499,7 @@
 
   const CLOCK = /^([01]\d|2[0-3]):[0-5]\d$/;
   const CLOCK_SECONDS = /^([01]\d|2[0-3]):[0-5]\d:[0-5]\d$/;
+  const RANGE = /^([01]\d|2[0-3]):[0-5]\d-([01]\d|2[0-3]):[0-5]\d$/;
 
   function isInt(value) {
     return typeof value === 'number' && Number.isInteger(value);
@@ -535,15 +557,40 @@
     if (!isInt(polling.polling_interval) || polling.polling_interval < 5 || polling.polling_interval > 3600) {
       errors.push('轮询间隔应为 5~3600 秒');
     }
-    const offsets = polling.polling_date_offsets || [];
-    if (!offsets.length) {
-      errors.push('轮询日期偏移需要至少一个数字');
-    }
-    offsets.forEach(function (offset) {
-      if (!isInt(offset) || offset < 0 || offset > 30) {
-        errors.push('轮询日期偏移应为 0~30 的整数');
+    if (!RANGE.test(String(polling.polling_time_range || ''))) {
+      errors.push('关注时间段需要 HH:MM-HH:MM 格式，例如 19:00-21:00');
+    } else {
+      const parts = String(polling.polling_time_range).split('-');
+      if (parts[0] >= parts[1]) {
+        errors.push('关注时间段的结束时间要晚于开始时间');
+      } else if (!/:00$/.test(parts[0]) || !/:00$/.test(parts[1])) {
+        errors.push('关注时间段只支持整点');
       }
-    });
+    }
+    if (polling.polling_hours !== 1 && polling.polling_hours !== 2) {
+      errors.push('连续小时数只支持 1 或 2');
+    }
+    if (Array.isArray(polling.polling_dates)) {
+      if (!polling.polling_dates.length) {
+        errors.push('请至少选择一个轮询日期');
+      }
+    } else if (!polling.polling_date) {
+      const offsets = polling.polling_date_offsets || [];
+      if (!offsets.length) {
+        errors.push('轮询日期偏移需要至少一个数字');
+      }
+      offsets.forEach(function (offset) {
+        if (!isInt(offset) || offset < 0 || offset > 30) {
+          errors.push('轮询日期偏移应为 0~30 的整数');
+        }
+      });
+    }
+    if (polling.polling_courts !== undefined) {
+      if (!Array.isArray(polling.polling_courts)
+          || polling.polling_courts.some(function (court) { return typeof court !== 'string' || !court.trim(); })) {
+        errors.push('关注场地必须是场地名列表');
+      }
+    }
     const feishu = config.feishu || {};
     if (feishu.webhook && String(feishu.webhook).indexOf('http') !== 0) {
       errors.push('飞书 webhook 需要以 https:// 开头（open-apis/bot/v2/hook/…）');
@@ -601,9 +648,23 @@
       result.booking.preferences = [{ court: '任意', start: '19:00', end: '21:00' }];
     }
 
-    result.polling.polling_time_slots = (result.polling.polling_time_slots || [])
-      .map(String)
-      .filter(function (item) { return item.trim().length; });
+    // 旧配置只有 polling_time_slots：折算成「最早开始 ~ 最晚结束」的时间段
+    const sourceRange = source.polling && source.polling.polling_time_range;
+    if (!sourceRange && Array.isArray(source.polling && source.polling.polling_time_slots)) {
+      const legacy = (source.polling.polling_time_slots || [])
+        .map(function (item) { return String(item).trim(); })
+        .filter(Boolean);
+      if (legacy.length) {
+        const starts = legacy.map(function (item) { return item.slice(0, 5); }).sort();
+        const ends = legacy.map(function (item) { return item.slice(6, 11); }).sort();
+        result.polling.polling_time_range = starts[0] + '-' + ends[ends.length - 1];
+      }
+    }
+    result.polling.polling_time_range = String(result.polling.polling_time_range || '19:00-21:00').trim();
+    result.polling.polling_hours = Number(result.polling.polling_hours || 1);
+    result.polling.polling_courts = (result.polling.polling_courts || [])
+      .map(function (item) { return String(item).trim(); })
+      .filter(Boolean);
     result.polling.polling_date_offsets = (result.polling.polling_date_offsets || [0]).map(Number);
 
     // 兼容旧配置：只有 preferred_time_slots 时，转成 preferences

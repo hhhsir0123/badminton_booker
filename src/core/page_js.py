@@ -18,6 +18,24 @@ HELPERS = r"""
 
   var bb = {};
 
+  // 下单请求的结果：这是判断「到底建单没有」最可靠的一手信息。
+  bb.orderResponses = [];
+  bb.recordOrderResponse = function (url, status, raw, since) {
+    try {
+      var parsed = new URL(url, location.origin);
+      if (!parsed.pathname.endsWith('/api/reservation/order/submit')) { return; }
+      var payload = null;
+      try { payload = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (_) { return; }
+      if (!payload || typeof payload !== 'object') { return; }
+      bb.orderResponses.push({
+        since: since, status: status,
+        code: payload.code, msg: String(payload.msg || payload.message || '').slice(0, 120),
+        data: payload.data === undefined ? null : payload.data
+      });
+      if (bb.orderResponses.length > 10) { bb.orderResponses.shift(); }
+    } catch (_) { /* 诊断不得干扰页面原有请求 */ }
+  };
+
   // 保存场次请求的脱敏结果，不能把资源加载完成误当业务成功。
   bb.dayResponses = [];
   bb.recordDayResponse = function (url, body, status, raw, since) {
@@ -61,8 +79,11 @@ HELPERS = r"""
   XMLHttpRequest.prototype.send = function (body) {
     var xhr = this, since = performance.now(), url = xhr.__bbUrl;
     xhr.addEventListener('loadend', function () {
-      try { bb.recordDayResponse(url, body, xhr.status, xhr.responseType === 'json' ? xhr.response : xhr.responseText, since); }
-      catch (_) { /* 不读取非文本响应 */ }
+      try {
+        var raw = xhr.responseType === 'json' ? xhr.response : xhr.responseText;
+        bb.recordDayResponse(url, body, xhr.status, raw, since);
+        bb.recordOrderResponse(url, xhr.status, raw, since);
+      } catch (_) { /* 不读取非文本响应 */ }
     }, { once: true });
     return originalSend.apply(this, arguments);
   };
@@ -73,8 +94,12 @@ HELPERS = r"""
       var url = typeof input === 'string' ? input : input.url;
       var body = options && options.body;
       return originalFetch.apply(this, arguments).then(function (response) {
-        if (String(url).indexOf('/api/reservation/day/info') >= 0) {
-          response.clone().text().then(function (raw) { bb.recordDayResponse(url, body, response.status, raw, since); }).catch(function () {});
+        if (String(url).indexOf('/api/reservation/day/info') >= 0
+            || String(url).indexOf('/api/reservation/order/submit') >= 0) {
+          response.clone().text().then(function (raw) {
+            bb.recordDayResponse(url, body, response.status, raw, since);
+            bb.recordOrderResponse(url, response.status, raw, since);
+          }).catch(function () {});
         }
         return response;
       });
@@ -254,15 +279,53 @@ HELPERS = r"""
     return texts;
   };
 
-  // 提交并等待平台回执。返回 ok/reason/message，不做任何重试。
-  bb.submit = async function (timeout) {
-    var scope = document.querySelector('.submit_order_box.pc') || document.querySelector('.submit_order_box');
-    if (!scope) { return { ok: false, reason: 'no-submit-box' }; }
-    var button = scope.querySelector('.btn') || scope.querySelector('button');
+  bb.submitButton = function () {
+    var scopes = [].slice.call(document.querySelectorAll('.submit_order_box')).filter(bb.visible);
+    var scope = scopes.find(function (node) { return node.classList.contains('pc'); }) || scopes[0];
+    if (!scope) { return null; }
+    return [].slice.call(scope.querySelectorAll('.btn, button')).find(function (button) {
+      return bb.visible(button) && !button.classList.contains('cancel')
+        && /^(提交|确认|预约)/.test(bb.text(button));
+    }) || null;
+  };
+
+  bb.submitEnabled = function (button) {
+    return !!button && !button.disabled && button.getAttribute('aria-disabled') !== 'true'
+      && !/\b(disab|disabled)\b/.test(String(button.className || ''));
+  };
+
+  bb.reservationTerms = function (button) {
+    return Array.from(button.closest('.submit_order_box').querySelectorAll('input[type="checkbox"]'))
+      .find(function (input) {
+        var label = input.closest('label');
+        return label && bb.visible(label) && /已阅读并同意|预约须知/.test(bb.text(label));
+      });
+  };
+
+  bb.prepareSubmit = async function (confirmTerms) {
+    var button = bb.submitButton();
     if (!button) { return { ok: false, reason: 'no-submit-button' }; }
-    if (String(button.className || '').indexOf('disabled') >= 0) {
-      return { ok: false, reason: 'submit-disabled', message: bb.text(scope).slice(0, 120) };
+    var terms = bb.reservationTerms(button);
+    if (terms && !terms.checked) {
+      if (!confirmTerms || terms.disabled) { return { ok: false, reason: 'terms-unchecked' }; }
+      terms.click();
+      button = await bb.waitFor(function () {
+        var current = bb.submitButton();
+        if (!bb.submitEnabled(current)) { return null; }
+        var checkbox = bb.reservationTerms(current);
+        return checkbox && checkbox.checked ? current : null;
+      }, 1500);
+      if (!button) { return { ok: false, reason: 'terms-confirmation-failed' }; }
     }
+    if (!bb.submitEnabled(button)) { return { ok: false, reason: 'submit-disabled' }; }
+    return { ok: true, button: button };
+  };
+
+  // 提交并等待平台回执。返回 ok/reason/message，不做任何重试。
+  bb.submit = async function (timeout, confirmTerms) {
+    var prepared = await bb.prepareSubmit(confirmTerms);
+    if (!prepared.ok) { return prepared; }
+    var button = prepared.button;
 
     bb._href = location.href;
     bb._baseline = bb.toasts().join('|');
@@ -404,9 +467,19 @@ if (!window.__bb) { done({ ok: false, error: 'no-helpers' }); return; }
   const results = [];
   (async function () {
     for (const target of targets) {
-      const result = window.__bb.selectCell(target.court, target.slot);
+      const bb = window.__bb;
+      const result = bb.selectCell(target.court, target.slot);
+      if (result.ok) {
+        const selected = await bb.waitFor(function () {
+          const found = bb.cellFor(target.court, target.slot);
+          const block = found.cell && found.cell.querySelector('.reserveBlock');
+          return block && (block.classList.contains('selected') || block.classList.contains('active'))
+            ? block : null;
+        }, 750);
+        result.changed = Boolean(selected);
+        if (selected) result.classes = [...selected.classList];
+      }
       results.push(Object.assign({ court: target.court, slot: target.slot }, result));
-      await window.__bb.sleep(60);
     }
     done({ ok: true, results: results });
   })().catch(function (error) { done({ ok: false, error: String(error), results: results }); });
@@ -416,13 +489,37 @@ if (!window.__bb) { done({ ok: false, error: 'no-helpers' }); return; }
 
 SUBMIT_JS = """
 const done = arguments[arguments.length - 1];
-const [timeout] = arguments;
+const [timeout, confirmTerms] = arguments;
 if (!window.__bb) { done({ ok: false, reason: 'no-helpers' }); return; }
-window.__bb.submit(timeout).then(done).catch(function (error) {
+window.__bb.submit(timeout, confirmTerms === true).then(done).catch(function (error) {
   done({ ok: false, reason: 'error', message: String(error) });
 });
 """
 
+
+# 选场后点提交：先走 prepareSubmit（勾选预约须知、等按钮可用），
+# 再用 DOM 事件点按钮——Selenium 原生 click 会被浮层挡住。
+CLICK_SUBMIT_JS = """
+const done = arguments[arguments.length - 1];
+const [confirmTerms] = arguments;
+if (!window.__bb) { done({ ok: false, reason: 'no-helpers' }); return; }
+window.__bb.prepareSubmit(confirmTerms === true).then(function (prepared) {
+  if (!prepared.ok) { done(prepared); return; }
+  var button = prepared.button;
+  var rect = button.getBoundingClientRect();
+  var options = {
+    bubbles: true, cancelable: true, view: window, button: 0,
+    clientX: rect.left + rect.width / 2,
+    clientY: rect.top + rect.height / 2
+  };
+  button.dispatchEvent(new MouseEvent('mousedown', options));
+  button.dispatchEvent(new MouseEvent('mouseup', options));
+  button.dispatchEvent(new MouseEvent('click', options));
+  done({ ok: true });
+}).catch(function (error) {
+  done({ ok: false, reason: 'error', message: String(error) });
+});
+"""
 
 # 只观察结果，不重复点击提交（验证码处理完之后调用）。
 AWAIT_OUTCOME_JS = """

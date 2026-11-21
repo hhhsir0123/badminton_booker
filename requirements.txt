@@ -3,5 +3,3 @@ selenium>=4.15.0
 PyYAML>=6.0.1
 # 验证码识别（ddddocr 会自动带上 onnxruntime / opencv / pillow）
 ddddocr>=1.4.11
-# 可选：点选文字验证码识别（order submit 时用），不装则只影响该功能
-rapidocr-onnxruntime>=1.4.0

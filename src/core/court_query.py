@@ -31,7 +31,7 @@ from ..utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 BEIJING = timezone(timedelta(hours=8))
-TIME_RANGE = re.compile(r"(\d{1,2}:\d{2})\s*[-–—~至]\s*(\d{1,2}:\d{2})")
+TIME_RANGE = re.compile(r"(\d{1,2}:\d{2})\s*[-–—~～至－]\s*(\d{1,2}:\d{2})")
 DATE_LABEL = re.compile(r"(\d{1,2})\s*[月/]\s*(\d{1,2})")
 # 前端会按「状态 class + 占用百分比 class」叠加，newReservation = 容量 90% 以上被占
 RESERVED_STATES = {
@@ -71,6 +71,7 @@ class QueryManager:
         self._api: Optional[ApiClient] = None
         self._api_site: Optional[str] = None
         self._api_expire = 0.0
+        self._court_sites: Dict[str, int] = {}   # 场地名 → venueSiteId
         self.last_query_status: Dict[str, Any] = {}
         self.last_page_error: Optional[str] = None
 
@@ -193,12 +194,44 @@ class QueryManager:
             return [...hits].reverse().find(item => item.date === arguments[0]) || null;
         """, wanted)
 
+    def _wait_loaded_response(self, wanted: str) -> Optional[Dict[str, Any]]:
+        """默认选中的日期可能仍在加载，等当前文档的首次响应。"""
+        try:
+            return self.wait(lambda _: self._loaded_response(wanted), 3)
+        except TimeoutException:
+            return None
+
     def reload(self):
         self.driver.refresh()
         self.reset_helpers_cache()
         self.last_date = None
         self._ensure_helpers()
         self._wait_false(lambda _: self.tabs(), 15)
+
+    def open_venue_site(self, site_id: int) -> bool:
+        """直接打开某个场馆页面（按 venueSiteId）。仅作排障用途，日常轮询不会切站点。
+
+        同一个「羽毛球」下按 venueSiteId 分成多张表，页面一次只显示一个；
+        轮询要覆盖全部场地就得挨个切。
+        """
+        try:
+            origin = self._js("return location.origin;")
+        except Exception as error:  # noqa: BLE001
+            logger.warning("读取 origin 失败: %s", error)
+            return False
+        if not origin:
+            return False
+        self.driver.get(f"{origin}/venue/venue-reservation/{int(site_id)}")
+        self.reset_helpers_cache()
+        self.last_date = None
+        self.last_query_status = {}
+        self._api = None
+        self._api_site = str(int(site_id))
+        if not self._wait_false(lambda _: self.tabs(), 15):
+            logger.warning("子场馆 %s 没有加载出日期条", site_id)
+            return False
+        self._ensure_helpers()
+        return True
 
     def focus_date(self, wanted: str, fresh: bool = False, refresh: str = "auto") -> bool:
         """让预约表显示 wanted 这一天的数据。fresh=True 时强制重新取一次数据。"""
@@ -245,10 +278,10 @@ class QueryManager:
                 return False
 
         started_at = datetime.now(BEIJING)
-        loaded = (self._loaded_response(wanted) if self.last_query_status.get("refreshed")
+        loaded = (self._wait_loaded_response(wanted) if self.last_query_status.get("refreshed")
                   and "active" in self.tabs()[index]["cls"].split() else None)
         result = loaded or self._click_tab(index, wanted=wanted)
-        if not result.get("ok") and refresh == "auto":
+        if not result.get("ok") and refresh == "auto" and not self.last_query_status.get("refreshed"):
             # 部分前端在页签已选中时不会再发请求，退化成整页刷新
             logger.info("点击日期页签没有触发数据请求（%s），改用整页刷新", result.get("error"))
             refresh_started = time.monotonic()
@@ -259,7 +292,7 @@ class QueryManager:
             if index is None:
                 self.last_query_status["error"] = "target-date-missing"
                 return False
-            loaded = (self._loaded_response(wanted)
+            loaded = (self._wait_loaded_response(wanted)
                       if "active" in self.tabs()[index]["cls"].split() else None)
             result = loaded or self._click_tab(index, wanted=wanted)
 
@@ -414,10 +447,16 @@ class QueryManager:
         """读完整张表（必要时翻页），返回 {场地: {时段: 原文}}。"""
         if not self.focus_date(wanted, fresh=True):
             return {}
+        if not self._wait_false(lambda _: self.is_active(wanted) and self.snapshot(), 3):
+            self.last_query_status.update(ok=False, error="table-not-ready")
+            return {}
         merged: Dict[str, Dict[str, str]] = {}
         for page in self.iter_pages():
             for court, slots in self.free_slots(page).items():
                 merged.setdefault(court, {}).update(slots)
+        if self.last_page_error:
+            self.last_query_status.update(ok=False, error=self.last_page_error)
+            return {}
         return merged
 
     def ensure_visible(self, court: str) -> bool:
@@ -433,6 +472,73 @@ class QueryManager:
         return False
 
     # ------------------------------------------------------------- 对外兼容层
+
+    def _day_rows(self, site: int, day: str) -> Optional[list]:
+        client = self._api_client()
+        if client is None:
+            return None
+        try:
+            data = client.json_get(
+                "/api/reservation/day/info",
+                {"venueSiteId": str(site), "searchDate": day, "hasReserveInfo": "1",
+                 "nocache": str(int(time.time() * 1000))},
+            ) or {}
+        except Exception as error:  # noqa: BLE001
+            logger.debug("读取场馆 %s 的 day/info 失败: %s", site, error)
+            return None
+        dates = data.get("reservationDateSpaceInfo") if isinstance(data, dict) else None
+        rows = (dates or {}).get(day)
+        return rows if isinstance(rows, list) else None
+
+    def slot_status(self, day: str, court: str, slot: str) -> Optional[int]:
+        """读 day/info 里某个场格的状态：1 可订 / 2 不开放 / 3 未支付 / 4 已预约。
+
+        同一批场地可能落在不同 venueSiteId 下，当前页面只对应其中一个，
+        所以这里按需挨个查，并缓存「场地 → site」。
+        读不到返回 None。
+        """
+        bounds = parse_slot(str(slot).replace("～", "-").replace("－", "-"))
+        if bounds is None:
+            return None
+        wanted = (court or "").replace("→", "").strip()
+        if not wanted:
+            return None
+
+        sites: List[int] = []
+        cached = self._court_sites.get(wanted)
+        if isinstance(cached, int):
+            sites.append(cached)
+        if self._api_site:
+            try:
+                current = int(self._api_site)
+                if current not in sites:
+                    sites.append(current)
+            except (TypeError, ValueError):
+                pass
+        sites.extend(site for site in range(1, 7) if site not in sites)
+
+        for site in sites:
+            rows = self._day_rows(site, day)
+            if not rows:
+                continue
+            for row in rows:
+                for _, cell in (row or {}).items():
+                    if not isinstance(cell, dict):
+                        continue
+                    name = (cell.get("spaceName") or "").replace("→", "").strip()
+                    if name != wanted:
+                        continue
+                    start = str(cell.get("startDate") or "")
+                    end = str(cell.get("endDate") or "")
+                    if " " not in start or " " not in end:
+                        continue
+                    if start.split(" ")[1][:5] != bounds[0] or end.split(" ")[1][:5] != bounds[1]:
+                        continue
+                    status = cell.get("reservationStatus")
+                    if isinstance(status, int):
+                        self._court_sites[wanted] = site
+                        return status
+        return None
 
     def query_available_courts(self, wanted: str) -> Dict[str, List[str]]:
         return {court: sorted(slots) for court, slots in self.scan(wanted).items()}

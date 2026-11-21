@@ -83,7 +83,7 @@
 | `src/core/booking_result.py` | `BookingOutcome` 枚举（CREATED / UNAVAILABLE / REJECTED / UNKNOWN） |
 | `src/pipeline/base_pipeline.py` | 生命周期、登录、导航、通知、停止信号 |
 | `src/pipeline/ticket_grabbing_pipeline.py` | 抢票主流程（准备、预解、探测、选场、提交） |
-| `src/pipeline/periodic_scanning_pipeline.py` | 轮询主流程（定时扫、判断、自动下单、通知） |
+| `src/pipeline/periodic_scanning_pipeline.py` | 轮询主流程（定时扫、抢占式下单、飞书通知、失败退避） |
 | `src/utils/ocr.py` / `captcha_solver.py` | 登录验证码识别 |
 | `src/utils/click_word_solver.py` | 点选验证码本地识别（ddddocr 定位 + 倾斜校正 + RapidOCR） |
 | `src/utils/ttshitu_provider.py` | 图鉴打码客户端（typeid=43 闭集匹配） |
@@ -116,13 +116,13 @@
 
 | 依赖 | 版本 | 用途 |
 | --- | --- | --- |
-| Python | 3.9+ | 运行环境 |
+| Python | 3.9+（点选文字验证码本地 OCR 需 Python 3.12 或更低版本） | 运行环境 |
 | Chrome | 任意较新版本 | 浏览器 |
 | chromedriver | 与 Chrome 同版本 | Selenium 驱动 |
 | selenium | ≥4.15 | 浏览器自动化 |
 | PyYAML | ≥6.0.1 | 配置读写 |
 | ddddocr | ≥1.4.11 | 验证码检测/识别（带 onnxruntime、opencv、Pillow） |
-| rapidocr-onnxruntime | ≥1.4.0 | 中文单字识别（可选，点选兜底用） |
+| rapidocr-onnxruntime | 可选 | 中文单字识别（点选验证码用）；不在基础 requirements 中，需单独安装 |
 
 ### 外部服务
 
@@ -206,10 +206,22 @@ token 有效期 180 秒，所以预解可以发生在放场前一两分钟；
   1. 对 polling_date_offsets 里每一天读表
   2. 检查 polling_time_slots 里的时段是否有空场
   3. 有空场：
-       - is_auto_booking = true  → 直接调 BookinManager 下单
-       - is_auto_booking = false → 只发通知
-  4. 发飞书/邮件，记录日志
-  5. 等待下一轮（可被 stop() 中断）
+       - is_auto_booking = true  → 当轮立即下单（抢占式）：
+           a. 重新 scan(day) 复查预约表，防止翻页/切日期后数据过期
+           b. 选场 → 点提交（不预解，等验证码真的弹出来）
+           c. SubmitCaptchaFlow.solve_after_submit() 现场识别：读图 → 点击 → 拦到 token
+              识别失败只重试「没认出来」（换图，不计平台失败次数）；
+              点过没通过就不再点，避免触发 AJ-Captcha 的失败锁
+           d. 带 token 提交，等回执：created / rejected / unknown
+           e. 建单成功：立刻发飞书（15 分钟内支付），进入支付等待：
+              每 60 秒读一次 day/info 里该场格的 reservationStatus
+              （3 = 未支付 → 发飞书提醒；4 = 已支付 → 结束轮询、关浏览器；
+                1/2 = 订单已释放 → 15 分钟没付，重新扫描抢下一单）
+           f. 验证码连续 3 次没解开或平台提示失败次数过多 → 停止轮询并通知
+       - is_auto_booking = false → 只发通知（同一批空场只推一次）
+  4. 发飞书，记录日志
+  5. 读表失败 → 指数退避（最长 10 分钟），连续第 3/6 次失败尝试重新登录恢复会话
+  6. 等待下一轮（可被 stop() 中断）
 ```
 
 与抢票链路的区别：
@@ -218,8 +230,8 @@ token 有效期 180 秒，所以预解可以发生在放场前一两分钟；
 | --- | --- | --- |
 | 触发 | 固定放场时间 | 按间隔循环 |
 | 目标 | D+2 的指定候选 | 多个日期的指定时段 |
-| 速度要求 | 毫秒级 | 秒级 |
-| 验证码 | 预解 + 现场兜底 | 现场识别 |
+| 速度要求 | 毫秒级 | 秒级（发现空场当轮就抢） |
+| 验证码 | 开售前预解 token，T0 直接提交 | 不预解：查到空场、点提交后再现场解，失败安全退出 |
 | 用途 | 抢新放出来的场 | 捡别人取消的空场 |
 
 ---
@@ -300,7 +312,6 @@ token 有效期 180 秒，所以预解可以发生在放场前一两分钟；
 | `runtime.release_probe_interval_ms` | 200ms | 探测频率 |
 | `runtime.release_grace_ms` | 4000ms | 放场后继续尝试的窗口 |
 | `runtime.submit_timeout_ms` | 6000ms | 等提交回执 |
-| `runtime.keep_open_after_success` | 600s | 抢到后保持浏览器 |
 | `captcha.provider` | local | 本地 / 图鉴 |
 | `captcha.max_attempts` | 1 | 验证码尝试次数 |
 | `polling.polling_interval` | 60s | 轮询间隔 |

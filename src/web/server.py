@@ -93,13 +93,14 @@ class Runner:
         alive = bool(self.thread and self.thread.is_alive())
         message = self.message
         pipeline = self.pipeline
-        if pipeline is not None:
-            summary = getattr(pipeline, "summary", None) or {}
+        summary = getattr(pipeline, "summary", None) or {} if pipeline is not None else {}
+        if summary:
             message = summary.get("message") or message
         return {
             "state": "running" if alive else self.state,
             "mode": self.mode,
             "message": message,
+            "summary": summary,
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "elapsed": int(time.time() - self.started_at) if self.started_at and alive else None,
