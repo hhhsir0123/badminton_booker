@@ -178,6 +178,33 @@ class BookingManager:
             return False
         return all(slot in text for court, slots in segments for slot in slots)
 
+    def _selected_amount(self) -> str:
+        """底部「已选」里的订单金额，用来确认选场真的进了 Vue。"""
+        try:
+            text = str(self.driver.execute_script(SELECTED_TEXT_JS) or "")
+        except Exception:  # noqa: BLE001
+            return "读取失败"
+        import re
+
+        match = re.search(r"金额[：:]\s*(¥?\s*[\d.]+\s*元?)", text)
+        return match.group(1).strip() if match else "未显示金额"
+
+    def _panel_brief(self) -> str:
+        """一行内的提交面板状态：boxes / 按钮 class / 须知 disabled,checked。"""
+        script = """
+        const boxes = [...document.querySelectorAll('.submit_order_box')]
+          .filter(b => b.getClientRects().length);
+        const b = window.__bb.submitButton();
+        const t = b ? window.__bb.reservationTerms(b) : null;
+        return {boxes: boxes.length, btn: b ? String(b.className) : null,
+                termsDisabled: t ? !!t.disabled : null,
+                termsChecked: t ? !!t.checked : null};
+        """
+        try:
+            return str(self.driver.execute_script(script) or {})
+        except Exception as error:  # noqa: BLE001
+            return f"读取失败:{error}"
+
     def _describe_submit_state(self) -> str:
         """把订单面板的真实状态打进日志，便于事后定位「须知不可点」这类问题。"""
         script = """
@@ -349,7 +376,10 @@ class BookingManager:
         partner_names = partner_names or []
         logger.info("尝试预订 %s %s", court_name, ", ".join(time_slots))
 
+        select_started = time.monotonic()
         selection = self.select_slots(court_name, time_slots)
+        logger.info("[指标] 选场耗时=%sms status=%s",
+                    int((time.monotonic() - select_started) * 1000), selection.get("status"))
         if selection["status"] == "error":
             logger.warning("选场阶段出错（%s），不提交订单", selection.get("detail"))
             return BookingOutcome.UNKNOWN
@@ -362,6 +392,9 @@ class BookingManager:
         if selection["status"] == "partial" and not allow_partial:
             logger.info("只选中部分时段且未开启 allow_partial，换下一个候选")
             return BookingOutcome.UNAVAILABLE
+
+        logger.info("[指标] 已选金额=%s", self._selected_amount())
+        logger.info("[指标] 提交面板=%s", self._panel_brief())
 
         if not self.background_clicks:
             # 保留一个显式等待的钩子，方便需要人工确认弹窗的场景
@@ -377,6 +410,7 @@ class BookingManager:
         # 放场瞬间刚整页刷新过，预约须知/提交按钮可能还是 disabled 状态，
         # prepareSubmit 会直接返回 terms-unchecked。什么都没提交，重试是安全的。
         payload = {}
+        submit_started = time.monotonic()
         for attempt in range(1, 4):
             payload = (self.submit(submit_timeout_ms, confirm_terms=True)
                        if confirm_terms else self.submit(submit_timeout_ms))
@@ -388,6 +422,9 @@ class BookingManager:
                 logger.warning("提交按钮/预约须知未就绪（%s），%.2fs 后重试（%s/3）",
                                reason, delay, attempt)
                 time.sleep(delay)
+        logger.info("[指标] 提交回执 reason=%s message=%s 耗时=%sms",
+                    payload.get("reason"), str(payload.get("message") or "")[:60],
+                    int((time.monotonic() - submit_started) * 1000))
         if payload.get("reason") == "captcha" and confirm_terms:
             logger.warning("平台要求验证码，暂停自动下单，请在预约页面完成验证")
             return BookingOutcome.UNKNOWN

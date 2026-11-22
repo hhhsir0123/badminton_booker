@@ -599,11 +599,15 @@ class TicketGrabbingPipeline(BasePipeline):
             return False
 
         self._note(candidates=[{"court": c, "slots": s} for c, s in found])
+        self.logger.info("[指标] 放场→候选就绪=%dms（候选 %d 个）",
+                         int((self._now() - target).total_seconds() * 1000), len(found))
         for index, (court, slots) in enumerate(found[:max_attempts], start=1):
             if self.stopped:
                 self._note(state="cancelled", message="提交前被取消")
                 return False
             self.logger.info("候选 %s/%s：%s %s", index, min(len(found), max_attempts), court, ", ".join(slots))
+            self.logger.info("[指标] 放场→开始提交=%dms",
+                             int((self._now() - target).total_seconds() * 1000))
             started = time.monotonic()
             if index == 1 and self._validate_pre_solved():
                 presolved_result = self._submit_presolved(court, slots)
