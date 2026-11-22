@@ -371,20 +371,21 @@ class BookingManager:
             self.click_partner(partner_names)
 
         # 放场瞬间整页刷新后，订单面板可能还在初始化（须知 disabled），先等它就绪
-        self._wait_submit_ready(timeout_ms=max(2000, submit_timeout_ms))
+        # 只等 1.2s：放场抢票拼的是毫秒，等太久不如换下一个候选
+        self._wait_submit_ready(timeout_ms=1200)
 
         # 放场瞬间刚整页刷新过，预约须知/提交按钮可能还是 disabled 状态，
         # prepareSubmit 会直接返回 terms-unchecked。什么都没提交，重试是安全的。
         payload = {}
-        for attempt in range(1, 6):
+        for attempt in range(1, 4):
             payload = (self.submit(submit_timeout_ms, confirm_terms=True)
                        if confirm_terms else self.submit(submit_timeout_ms))
             reason = payload.get("reason")
             if reason not in ("terms-unchecked", "terms-confirmation-failed", "submit-disabled"):
                 break
-            if attempt < 5:
-                delay = 0.4 * attempt
-                logger.warning("提交按钮/预约须知未就绪（%s），%.1fs 后重试（%s/5）",
+            if attempt < 3:
+                delay = 0.25 * attempt
+                logger.warning("提交按钮/预约须知未就绪（%s），%.2fs 后重试（%s/3）",
                                reason, delay, attempt)
                 time.sleep(delay)
         if payload.get("reason") == "captcha" and confirm_terms:

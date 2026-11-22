@@ -371,7 +371,7 @@ class SubmitCaptchaFlow:
         try:
             from .page_js import WAIT_SUBMIT_READY_JS
 
-            self.driver.execute_async_script(WAIT_SUBMIT_READY_JS, 6000)
+            self.driver.execute_async_script(WAIT_SUBMIT_READY_JS, 1200)
         except Exception:  # noqa: BLE001
             pass
         try:
