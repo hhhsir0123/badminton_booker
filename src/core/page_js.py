@@ -497,6 +497,25 @@ window.__bb.submit(timeout, confirmTerms === true).then(done).catch(function (er
 """
 
 
+# 等「预约须知 + 提交按钮」真正可用：放场瞬间整页刷新后，订单面板会有一段
+# 初始化时间，此时复选框是 disabled，prepareSubmit 会直接返回 terms-unchecked。
+WAIT_SUBMIT_READY_JS = """
+const done = arguments[arguments.length - 1];
+const [timeoutMs] = arguments;
+if (!window.__bb) { done({ ok: false, reason: 'no-helpers' }); return; }
+window.__bb.waitFor(function () {
+  var button = window.__bb.submitButton();
+  if (!button) { return null; }
+  var terms = window.__bb.reservationTerms(button);
+  if (terms && terms.disabled) { return null; }
+  return button;
+}, Math.max(500, Number(timeoutMs) || 6000)).then(function (button) {
+  done({ ok: Boolean(button), reason: null });
+}).catch(function (error) {
+  done({ ok: false, reason: String(error) });
+});
+"""
+
 # 选场后点提交：先走 prepareSubmit（勾选预约须知、等按钮可用），
 # 再用 DOM 事件点按钮——Selenium 原生 click 会被浮层挡住。
 CLICK_SUBMIT_JS = """

@@ -369,6 +369,12 @@ class SubmitCaptchaFlow:
         from .page_js import CLICK_SUBMIT_JS
 
         try:
+            from .page_js import WAIT_SUBMIT_READY_JS
+
+            self.driver.execute_async_script(WAIT_SUBMIT_READY_JS, 6000)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             result = self.driver.execute_async_script(CLICK_SUBMIT_JS, confirm_terms) or {}
         except Exception as error:  # noqa: BLE001
             logger.warning("点击提交按钮失败: %s", error)

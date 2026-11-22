@@ -178,6 +178,40 @@ class BookingManager:
             return False
         return all(slot in text for court, slots in segments for slot in slots)
 
+    def _describe_submit_state(self) -> str:
+        """把订单面板的真实状态打进日志，便于事后定位「须知不可点」这类问题。"""
+        script = """
+        const boxes = [...document.querySelectorAll('.submit_order_box')];
+        return boxes.map(function (b) {
+          const btn = [...b.querySelectorAll('.btn,button')].find(x => /^(提交|确认|预约)/.test((x.innerText||'').trim()));
+          const terms = [...b.querySelectorAll('input[type=checkbox]')].map(i => ({
+              checked: !!i.checked, disabled: !!i.disabled,
+              label: i.closest('label') ? i.closest('label').innerText.trim().slice(0, 12) : null }));
+          return {visible: !!b.getClientRects().length, cls: String(b.className),
+                  btn: btn ? String(btn.className) : null,
+                  text: (b.innerText || '').replace(/\s+/g, ' ').slice(0, 40), terms: terms};
+        });
+        """
+        try:
+            boxes = self.driver.execute_script(script) or []
+        except Exception as error:  # noqa: BLE001
+            return f"读取失败: {error}"
+        return str(boxes)[:400]
+
+    def _wait_submit_ready(self, timeout_ms: int = 6000) -> bool:
+        """等订单面板就绪（签到框可点、按钮可用），最多 timeout_ms 毫秒。"""
+        from .page_js import WAIT_SUBMIT_READY_JS
+
+        try:
+            result = self.driver.execute_async_script(WAIT_SUBMIT_READY_JS, int(timeout_ms)) or {}
+        except Exception as error:  # noqa: BLE001
+            logger.debug("等待提交面板就绪失败（忽略）: %s", error)
+            return False
+        if result.get("ok"):
+            return True
+        logger.warning("提交面板 %.1fs 内没就绪（%s），仍尝试提交", timeout_ms / 1000, result.get("reason"))
+        return False
+
     def clear_selection(self) -> bool:
         """只清理已选场格，并确认仍在同一张预约表。"""
         try:
@@ -336,27 +370,35 @@ class BookingManager:
         if is_click_parter or partner_names:
             self.click_partner(partner_names)
 
+        # 放场瞬间整页刷新后，订单面板可能还在初始化（须知 disabled），先等它就绪
+        self._wait_submit_ready(timeout_ms=max(2000, submit_timeout_ms))
+
         # 放场瞬间刚整页刷新过，预约须知/提交按钮可能还是 disabled 状态，
         # prepareSubmit 会直接返回 terms-unchecked。什么都没提交，重试是安全的。
         payload = {}
-        for attempt in range(1, 4):
+        for attempt in range(1, 6):
             payload = (self.submit(submit_timeout_ms, confirm_terms=True)
                        if confirm_terms else self.submit(submit_timeout_ms))
             reason = payload.get("reason")
             if reason not in ("terms-unchecked", "terms-confirmation-failed", "submit-disabled"):
                 break
-            if attempt < 3:
-                logger.warning("提交按钮/预约须知未就绪（%s），%sms 后重试",
-                               reason, 300 * attempt)
-                time.sleep(0.3 * attempt)
+            if attempt < 5:
+                delay = 0.4 * attempt
+                logger.warning("提交按钮/预约须知未就绪（%s），%.1fs 后重试（%s/5）",
+                               reason, delay, attempt)
+                time.sleep(delay)
         if payload.get("reason") == "captcha" and confirm_terms:
             logger.warning("平台要求验证码，暂停自动下单，请在预约页面完成验证")
             return BookingOutcome.UNKNOWN
         if payload.get("reason") == "captcha":
             payload = self._solve_captcha_and_wait(submit_timeout_ms)
-        if payload.get("reason") in ("terms-unchecked", "terms-confirmation-failed"):
-            logger.warning("已选中场地，但预约须知或提交按钮状态未就绪，订单未提交")
-            return BookingOutcome.UNKNOWN
+        if payload.get("reason") in ("terms-unchecked", "terms-confirmation-failed", "submit-disabled"):
+            logger.warning("提交面板诊断: %s", self._describe_submit_state())
+            # 这类失败一定没提交出去，是页面还没就绪，不是「结果未知」：
+            # 返回 UNAVAILABLE，让上层换下一个候选继续抢（每次尝试都多一次机会）。
+            logger.warning("预约须知/提交按钮始终未就绪（%s），订单未提交，换下一个候选",
+                           payload.get("reason"))
+            return BookingOutcome.UNAVAILABLE
         outcome = self._verdict(payload)
         if outcome is BookingOutcome.UNKNOWN:
             self._snapshot_unknown()
