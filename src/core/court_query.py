@@ -249,7 +249,15 @@ class QueryManager:
             # 开售前打开的日期栏不会被 Python 接口探测更新，必须先刷新再定位。
             started = time.monotonic()
             self.reload()
+            # 日期栏是异步渲染的：刷新后通常先出现旧日期，新日期要晚几十到几百毫秒。
+            # 轮询等它真正出现，而不是刷新完只看一眼（否则会误判 target-date-missing）。
+            appeared = self._wait_false(
+                lambda _: self.index_of(wanted) is not None, 5
+            )
             index = self.index_of(wanted)
+            if appeared and index is not None:
+                logger.info("目标日期 %s 在刷新后出现，累计 %sms",
+                            wanted, int((time.monotonic() - started) * 1000))
             self.last_query_status["refresh_ms"] = int((time.monotonic() - started) * 1000)
             self.last_query_status["refreshed"] = True
             self.last_query_status["visible_dates"] = [tab.get("text", "")[:40] for tab in self.tabs()]
