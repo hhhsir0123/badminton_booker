@@ -461,13 +461,16 @@ class TicketGrabbingPipeline(BasePipeline):
                 return []
             cutoff = now.strftime("%H:%M") if play_day == now.date().isoformat() else None
             fallback = bool(self.config.get("booking.fallback_any", False))
-            # 优先直接读接口：放场瞬间 DOM 还在渲染/翻页，解析要一两秒
-            api_merged = self.query_manager.api_free_slots(play_day)
+            # 优先复用放场探测那次 day/info 的响应（同一份数据，不再多发一次请求）
+            probe = getattr(self, "_released_probe", None) or {}
+            probe_slots = probe.get("slots") if isinstance(probe, dict) else None
+            api_merged = probe_slots if isinstance(probe_slots, dict) else self.query_manager.api_free_slots(play_day)
             if isinstance(api_merged, dict):
                 merged: Dict[str, Dict[str, str]] = api_merged
                 result["source"] = "api"
                 result["pages"] = 0
-                self.logger.info("[指标] 候选来源=接口，场格=%s，耗时=%sms",
+                self.logger.info("[指标] 候选来源=%s，场格=%s，耗时=%sms",
+                                 "探测响应" if isinstance(probe_slots, dict) else "接口",
                                  sum(len(slots) for slots in merged.values()),
                                  int((time.monotonic() - started) * 1000))
             else:
@@ -558,6 +561,7 @@ class TicketGrabbingPipeline(BasePipeline):
                     )
 
             if now >= opening or released(probe, baseline):
+                self._released_probe = probe
                 self._note(state="reading")
                 self._log_date_bar_state("放场后")
                 found = self._candidates_for(play_day, now, choices)
