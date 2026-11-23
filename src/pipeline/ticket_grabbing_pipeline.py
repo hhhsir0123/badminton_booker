@@ -170,6 +170,9 @@ class TicketGrabbingPipeline(BasePipeline):
     def start(self) -> bool:
         if not super().start():
             return False
+        # 实验开关：是否尝试「不整页刷新，只改日期栏状态」（默认关）
+        if getattr(self, "query_manager", None) is not None:
+            self.query_manager.patch_date_bar = bool(self.config.get("runtime.patch_date_bar", False))
         if not self.config.get("captcha.pre_solve", True):
             self._note(captcha_pre_solve={"state": "disabled", "message": "预解已关闭"})
             return True

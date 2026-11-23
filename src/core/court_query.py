@@ -72,6 +72,9 @@ class QueryManager:
         self._api_site: Optional[str] = None
         self._api_expire = 0.0
         self._court_sites: Dict[str, int] = {}   # 场地名 → venueSiteId
+        # 实验开关：放场时先尝试「让页面自己重建日期栏」，不整页刷新
+        self.patch_date_bar = False
+        self._patch_failed = False
         self.last_query_status: Dict[str, Any] = {}
         self.last_page_error: Optional[str] = None
 
@@ -233,6 +236,46 @@ class QueryManager:
         self._ensure_helpers()
         return True
 
+    def refresh_date_bar(self, day: str) -> bool:
+        """不整页刷新，让目标日期出现在日期栏（方案 B，默认关闭）。
+
+        做法：调用页面组件自己的 init / getReserveDate 重新拉一次页面数据，
+        它会按服务端最新的 advanceReservationDays 重建日期栏。
+        成功后不 reload 页面，预解的验证码 token 也不会被销毁。
+        """
+        started = time.monotonic()
+        script = """
+        try {
+          const seen = new Set(); let vm = null;
+          function find(n, d) {
+            if (!n || d > 12 || seen.has(n)) return null; seen.add(n);
+            if (n.$data && n.$data.tableVenueSite) return n;
+            for (const c of (n.$children || [])) { const r = find(c, d + 1); if (r) return r; }
+            return null;
+          }
+          for (const el of document.querySelectorAll('*')) {
+            const v = el.__vue__; if (!v) continue; vm = find(v, 0); if (vm) break;
+          }
+          if (!vm) return JSON.stringify({ok: false, reason: 'no-vm'});
+          const called = [];
+          for (const name of ['init', 'getReserveDate']) {
+            if (typeof vm[name] === 'function') {
+              try { vm[name](); called.push(name); } catch (e) { /* 继续试下一个 */ }
+            }
+          }
+          return JSON.stringify({ok: called.length > 0, called: called});
+        } catch (e) { return JSON.stringify({ok: false, reason: String(e)}); }
+        """
+        try:
+            result = self._js(script) or "{}"
+        except Exception as error:  # noqa: BLE001
+            logger.debug("刷新日期栏失败: %s", error)
+            return False
+        appeared = self._wait_false(lambda _: self.index_of(day) is not None, 2.0)
+        logger.info("[指标] 日期栏patch：%s，目标出现=%s，耗时=%sms",
+                    result, appeared, int((time.monotonic() - started) * 1000))
+        return appeared
+
     def focus_date(self, wanted: str, fresh: bool = False, refresh: str = "auto") -> bool:
         """让预约表显示 wanted 这一天的数据。fresh=True 时强制重新取一次数据。"""
         self.last_date = None
@@ -243,6 +286,13 @@ class QueryManager:
             return False
         self._ensure_helpers()
         index = self.index_of(wanted)
+        if index is None and self.patch_date_bar and not self._patch_failed:
+            # 方案 B：先尝试只改页面状态，让新日期出现（不整页刷新）
+            if self.refresh_date_bar(wanted):
+                index = self.index_of(wanted)
+                if index is not None:
+                    self.last_query_status["patched_bar"] = True
+                    logger.info("日期栏已通过状态刷新出现（未整页刷新）")
         if index is None:
             before = [tab.get("text", "")[:40] for tab in self.tabs()]
             logger.info("目标日期 %s 未出现在页面，刷新日期窗口（当前日期栏=%s）", wanted, before)
@@ -305,6 +355,9 @@ class QueryManager:
             result = loaded or self._click_tab(index, wanted=wanted)
 
         if not result.get("ok"):
+            if self.last_query_status.get("patched_bar"):
+                self._patch_failed = True
+                logger.warning("日期栏 patch 后没拿到数据，回退整页刷新")
             self.last_query_status["error"] = result.get("error") or "date-response-missing"
             logger.warning("目标日期 %s 点击后没有确认数据响应，不能认定场次读取成功", wanted)
             return False
