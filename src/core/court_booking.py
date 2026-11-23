@@ -36,6 +36,7 @@ class BookingManager:
         self.browser = browser
         self.query = query
         self.captcha_solver = captcha_solver
+        self.submit_flow = None      # 点选验证码流程，由 pipeline 注入（带图鉴 provider）
         self.background_clicks = True
 
     @property
@@ -425,10 +426,10 @@ class BookingManager:
         logger.info("[指标] 提交回执 reason=%s message=%s 耗时=%sms",
                     payload.get("reason"), str(payload.get("message") or "")[:60],
                     int((time.monotonic() - submit_started) * 1000))
-        if payload.get("reason") == "captcha" and confirm_terms:
-            logger.warning("平台要求验证码，暂停自动下单，请在预约页面完成验证")
-            return BookingOutcome.UNKNOWN
         if payload.get("reason") == "captcha":
+            # 不管是预解失效还是本来就没预解，都现场解一次——
+            # 「confirm_terms=True」只是允许勾须知，不应该意味着遇到验证码就放弃。
+            logger.info("平台要求点选验证码，转现场识别")
             payload = self._solve_captcha_and_wait(submit_timeout_ms)
         if payload.get("reason") in ("terms-unchecked", "terms-confirmation-failed", "submit-disabled"):
             logger.warning("提交面板诊断: %s", self._describe_submit_state())
@@ -449,10 +450,19 @@ class BookingManager:
             from ..utils.click_word_solver import ClickWordSolver
             from .submit_captcha import SubmitCaptchaFlow
 
-            flow = SubmitCaptchaFlow(self.driver, ClickWordSolver())
+            flow = self.submit_flow or SubmitCaptchaFlow(self.driver, ClickWordSolver())
+            mark = flow.order_mark()
             if flow.solve_now(max_rounds=2) is None:
                 return {"ok": False, "reason": "captcha", "message": "验证码处理失败"}
-            logger.info("验证码已通过，继续等待提交回执")
+            logger.info("验证码已点击，等平台校验并提交")
+            # 优先看平台自己的下单接口回执：比页面提示可靠，也能分清成功/被拒
+            response = flow.wait_order_response(mark, timeout=timeout_ms / 1000 + 2)
+            if isinstance(response, dict):
+                code = str(response.get("code"))
+                if code == "200" and response.get("data") not in (None, "", {}, []):
+                    return {"ok": True, "reason": "api", "message": "下单成功"}
+                if code and code != "200":
+                    return {"ok": False, "reason": "toast", "message": str(response.get("msg") or "")}
             return self.driver.execute_async_script(AWAIT_OUTCOME_JS, int(timeout_ms), "") or {
                 "ok": False, "reason": "no-result"
             }
