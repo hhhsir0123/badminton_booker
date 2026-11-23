@@ -305,6 +305,45 @@ class TicketGrabbingPipeline(BasePipeline):
         self._presolve_fallback("没有有效预解结果，或结果已过期、页面已刷新")
         return False
 
+    def _log_date_bar_state(self, tag: str):
+        """记录日期栏状态（只读诊断）：几个页签、页面的 advanceReservationDays 是多少。
+
+        用来判断「不放刷新能不能让新日期出现在日期栏」：
+        如果放场前后 advanceReservationDays 变了、日期栏却还是旧的，就说明是页面缓存，
+        值得做「改状态 + 重渲染」；否则只能刷新。
+        """
+        script = """
+        try {
+          const seen = new Set(); let vm = null;
+          function find(node, d) {
+            if (!node || d > 12 || seen.has(node)) return null;
+            seen.add(node);
+            if (node.$data && node.$data.tableVenueSite) return node;
+            for (const c of (node.$children || [])) { const r = find(c, d + 1); if (r) return r; }
+            return null;
+          }
+          for (const el of document.querySelectorAll('*')) {
+            const v = el.__vue__; if (!v) continue;
+            vm = find(v, 0); if (vm) break;
+          }
+          const tabs = [...document.querySelectorAll('.date_box > div')]
+            .filter(e => e.getClientRects().length)
+            .map(e => (e.innerText || '').replace(/\s+/g, ' ').trim());
+          return JSON.stringify({
+            tabs: tabs,
+            advance: vm ? vm.advanceReservationDays : null,
+            dateList: vm ? vm.reservationDateList : null
+          });
+        } catch (e) { return JSON.stringify({error: String(e)}); }
+        """
+        try:
+            driver = getattr(getattr(self, "browser", None), "driver", None)
+            if driver is None:
+                return
+            self.logger.info("[指标] 日期栏(%s)=%s", tag, driver.execute_script(script))
+        except Exception as error:  # noqa: BLE001
+            self.logger.debug("日期栏诊断失败: %s", error)
+
     def _presolve_useful(self, day: str) -> bool:
         """放场要整页刷新时，预解 token 必被作废，不如省掉、提交时现场解。
 
@@ -517,6 +556,7 @@ class TicketGrabbingPipeline(BasePipeline):
 
             if now >= opening or released(probe, baseline):
                 self._note(state="reading")
+                self._log_date_bar_state("放场后")
                 found = self._candidates_for(play_day, now, choices)
                 if found:
                     return found
@@ -610,6 +650,7 @@ class TicketGrabbingPipeline(BasePipeline):
             if not self._wait_until(target - timedelta(seconds=60)):
                 self._note(state="cancelled", message="任务在预解前被取消")
                 return False
+            self._log_date_bar_state("T-60s")
             if self._presolve_useful(play_day.isoformat()):
                 validity = max(0, (target - self._now()).total_seconds()) + 5
                 self._pre_solve_captcha(min_validity=validity)
