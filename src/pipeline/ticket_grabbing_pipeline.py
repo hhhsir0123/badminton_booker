@@ -627,7 +627,10 @@ class TicketGrabbingPipeline(BasePipeline):
                     self._notify_failure(f"{court} {'、'.join(slots)} 提交结果未知，请核对订单")
                     return False
                 self._presolve_fallback("预解路径未提交")
-            outcome = self._book_candidate(court, slots, partners, allow_partial=allow_partial)
+            # confirm_terms=True：抢票必须自己勾「预约须知」，否则 prepareSubmit
+            # 会直接返回 terms-unchecked（页面上的须知本来就是未勾选状态）。
+            outcome = self._book_candidate(court, slots, partners,
+                                           allow_partial=allow_partial, confirm_terms=True)
             elapsed = int((time.monotonic() - started) * 1000)
             self.last_outcome = outcome
             self.summary.setdefault("timings", {})[f"attempt_{index}_ms"] = elapsed
