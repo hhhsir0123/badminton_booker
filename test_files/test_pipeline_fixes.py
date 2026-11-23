@@ -76,6 +76,33 @@ class SelectSlotsTest(unittest.TestCase):
         self.assertEqual(result["status"], "selected")
 
 
+class PresolveUsefulTest(unittest.TestCase):
+    """放场要整页刷新时，预解 token 必被作废，应跳过预解。"""
+
+    def pipeline(self):
+        from src.pipeline.ticket_grabbing_pipeline import TicketGrabbingPipeline
+
+        pipeline = TicketGrabbingPipeline.__new__(TicketGrabbingPipeline)
+        pipeline.logger = Mock()
+        pipeline.query_manager = Mock()
+        return pipeline
+
+    def test_skip_when_date_not_in_bar(self):
+        pipeline = self.pipeline()
+        pipeline.query_manager.index_of.return_value = None
+        self.assertFalse(pipeline._presolve_useful("2026-11-26"))
+
+    def test_keep_when_date_visible(self):
+        pipeline = self.pipeline()
+        pipeline.query_manager.index_of.return_value = 2
+        self.assertTrue(pipeline._presolve_useful("2026-11-26"))
+
+    def test_keep_when_query_fails(self):
+        pipeline = self.pipeline()
+        pipeline.query_manager.index_of.side_effect = RuntimeError("boom")
+        self.assertTrue(pipeline._presolve_useful("2026-11-26"))
+
+
 class CrossPageOrderTest(unittest.TestCase):
     def make_pipeline(self, pages):
         query = Mock()

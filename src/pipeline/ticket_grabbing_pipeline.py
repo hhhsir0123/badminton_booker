@@ -305,6 +305,25 @@ class TicketGrabbingPipeline(BasePipeline):
         self._presolve_fallback("没有有效预解结果，或结果已过期、页面已刷新")
         return False
 
+    def _presolve_useful(self, day: str) -> bool:
+        """放场要整页刷新时，预解 token 必被作废，不如省掉、提交时现场解。
+
+        判据：T-60s 时目标日期在不在日期栏。D+2 在放场前永远不在，
+        所以这一步实际会跳过预解；D+1 之类的场景仍然照旧预解。
+        """
+        try:
+            if self.query_manager is None:
+                return True
+            if self.query_manager.index_of(day) is None:
+                self.logger.info(
+                    "目标日期 %s 还不在日期栏（放场会整页刷新），跳过预解、改用提交时现场解", day
+                )
+                return False
+        except Exception as error:  # noqa: BLE001
+            self.logger.debug("判断预解是否有用失败（按有用处理）: %s", error)
+            return True
+        return True
+
     def _pre_solve_captcha(self, min_validity: float = 0) -> bool:
         started = time.monotonic()
         try:
@@ -591,8 +610,12 @@ class TicketGrabbingPipeline(BasePipeline):
             if not self._wait_until(target - timedelta(seconds=60)):
                 self._note(state="cancelled", message="任务在预解前被取消")
                 return False
-            validity = max(0, (target - self._now()).total_seconds()) + 5
-            self._pre_solve_captcha(min_validity=validity)
+            if self._presolve_useful(play_day.isoformat()):
+                validity = max(0, (target - self._now()).total_seconds()) + 5
+                self._pre_solve_captcha(min_validity=validity)
+            else:
+                self._note(captcha_pre_solve={"state": "skipped",
+                                              "message": "目标日期还不在日期栏，预解会被刷新作废"})
         if not self._wait_until(target - timedelta(milliseconds=1500)):
             self._note(state="cancelled", message="任务在放场前被取消")
             return False
