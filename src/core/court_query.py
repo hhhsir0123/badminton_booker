@@ -548,6 +548,22 @@ class QueryManager:
                         return status
         return None
 
+    def api_free_slots(self, day: str) -> Optional[Dict[str, Dict[str, str]]]:
+        """直接用 day/info 拿可订场格（不经过 DOM）。失败返回 None。
+
+        放场瞬间用它能省掉「等表格渲染 + 翻页解析」的一两秒；
+        返回结构和 DOM 版一致：{场地: {时段: 页面原文}}。
+        """
+        client = self._api_client()
+        if client is None or not self._api_site:
+            return None
+        try:
+            slots = client.free_slots(self._api_site, day)
+        except Exception as error:  # noqa: BLE001
+            logger.debug("接口取候选失败: %s", error)
+            return None
+        return slots if isinstance(slots, dict) else None
+
     def query_available_courts(self, wanted: str) -> Dict[str, List[str]]:
         return {court: sorted(slots) for court, slots in self.scan(wanted).items()}
 

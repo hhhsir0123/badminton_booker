@@ -400,15 +400,26 @@ class TicketGrabbingPipeline(BasePipeline):
                 return []
             cutoff = now.strftime("%H:%M") if play_day == now.date().isoformat() else None
             fallback = bool(self.config.get("booking.fallback_any", False))
-            merged: Dict[str, Dict[str, str]] = {}
-            for page in self.query_manager.iter_pages():
-                result["pages"] += 1
-                for court, slots in self.query_manager.free_slots(page).items():
-                    merged.setdefault(court, {}).update(slots)
-            page_error = getattr(self.query_manager, "last_page_error", None)
-            if result["pages"] == 0 or isinstance(page_error, str):
-                result["error"] = page_error if isinstance(page_error, str) else "table-missing"
-                return []
+            # 优先直接读接口：放场瞬间 DOM 还在渲染/翻页，解析要一两秒
+            api_merged = self.query_manager.api_free_slots(play_day)
+            if isinstance(api_merged, dict):
+                merged: Dict[str, Dict[str, str]] = api_merged
+                result["source"] = "api"
+                result["pages"] = 0
+                self.logger.info("[指标] 候选来源=接口，场格=%s，耗时=%sms",
+                                 sum(len(slots) for slots in merged.values()),
+                                 int((time.monotonic() - started) * 1000))
+            else:
+                result["source"] = "dom"
+                merged = {}
+                for page in self.query_manager.iter_pages():
+                    result["pages"] += 1
+                    for court, slots in self.query_manager.free_slots(page).items():
+                        merged.setdefault(court, {}).update(slots)
+                page_error = getattr(self.query_manager, "last_page_error", None)
+                if result["pages"] == 0 or isinstance(page_error, str):
+                    result["error"] = page_error if isinstance(page_error, str) else "table-missing"
+                    return []
             self.summary["availability_reads"] = int(self.summary.get("availability_reads", 0)) + 1
             result["free_slots"] = sum(len(slots) for slots in merged.values())
             found = candidates(merged, choices, cutoff, fallback)
