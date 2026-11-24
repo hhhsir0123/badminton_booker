@@ -360,6 +360,10 @@ class TicketGrabbingPipeline(BasePipeline):
         try:
             if self.query_manager is None:
                 return True
+            if getattr(self.query_manager, "patch_date_bar", False):
+                # 已启用「不整页刷新」：预解 token 不会被刷新销毁，值得预解
+                self.logger.info("已启用日期栏 patch（不整页刷新），保留预解")
+                return True
             if self.query_manager.index_of(day) is None:
                 self.logger.info(
                     "目标日期 %s 还不在日期栏（放场会整页刷新），跳过预解、改用提交时现场解", day
