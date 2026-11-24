@@ -85,6 +85,7 @@ class PresolveUsefulTest(unittest.TestCase):
         pipeline = TicketGrabbingPipeline.__new__(TicketGrabbingPipeline)
         pipeline.logger = Mock()
         pipeline.query_manager = Mock()
+        pipeline.query_manager.patch_date_bar = False
         return pipeline
 
     def test_skip_when_date_not_in_bar(self):
@@ -96,6 +97,12 @@ class PresolveUsefulTest(unittest.TestCase):
         pipeline = self.pipeline()
         pipeline.query_manager.index_of.return_value = 2
         self.assertTrue(pipeline._presolve_useful("2026-11-26"))
+
+    def test_keep_when_date_bar_patch_enabled(self):
+        pipeline = self.pipeline()
+        pipeline.query_manager.patch_date_bar = True
+        pipeline.query_manager.index_of.return_value = None
+        self.assertTrue(pipeline._presolve_useful("2026-11-27"))
 
     def test_keep_when_query_fails(self):
         pipeline = self.pipeline()
