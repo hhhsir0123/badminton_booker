@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -170,6 +171,9 @@ class TicketGrabbingPipeline(BasePipeline):
     def start(self) -> bool:
         if not super().start():
             return False
+        # 抢票模式：格子不是 free 立即判死；点完只等 200ms 看 class
+        if getattr(self, "booking_manager", None) is not None:
+            self.booking_manager.cell_wait_ms = int(self.config.get("runtime.cell_wait_ms", 200) or 200)
         # 实验开关：是否尝试「不整页刷新，只改日期栏状态」（默认关）
         if getattr(self, "query_manager", None) is not None:
             self.query_manager.patch_date_bar = bool(self.config.get("runtime.patch_date_bar", False))
@@ -537,6 +541,31 @@ class TicketGrabbingPipeline(BasePipeline):
         if not self._wait_until(wake_at):
             return []
 
+        # 并行刷新：放场那一刻页面就要开始 reload，和接口探测同时进行，
+        # 这样 focus_date 打开时日期栏已经有新日期，省掉一次串行等待（~380ms）。
+        reload_thread = None
+        if self.config.get("runtime.overlap_release_reload", True):
+            try:
+                self.query_manager._api_client()   # 预热会话，避免并行时抢 driver
+            except Exception:  # noqa: BLE001
+                pass
+            reload_at = opening + timedelta(milliseconds=30)
+
+            def _reload_worker():
+                try:
+                    delay = (reload_at - self._now()).total_seconds()
+                    if delay > 0:
+                        time.sleep(delay)
+                    started = time.monotonic()
+                    self.query_manager.reload()
+                    self.logger.info("[指标] 并行刷新完成：%sms",
+                                     int((time.monotonic() - started) * 1000))
+                except Exception as error:  # noqa: BLE001
+                    self.logger.warning("并行刷新失败（不影响主流程）: %s", error)
+
+            reload_thread = threading.Thread(target=_reload_worker, daemon=True)
+            reload_thread.start()
+
         baseline = None
         backoff = 0.0
         queries = 0
@@ -561,6 +590,8 @@ class TicketGrabbingPipeline(BasePipeline):
                     )
 
             if now >= opening or released(probe, baseline):
+                if reload_thread is not None:
+                    reload_thread.join(timeout=3)
                 self._released_probe = probe
                 self._note(state="reading")
                 self._log_date_bar_state("放场后")
@@ -716,6 +747,9 @@ class TicketGrabbingPipeline(BasePipeline):
             elapsed = int((time.monotonic() - started) * 1000)
             self.last_outcome = outcome
             self.summary.setdefault("timings", {})[f"attempt_{index}_ms"] = elapsed
+            self.logger.info("[指标] 候选 %s：%s %s → %s（%sms，放场后 %dms）",
+                             index, court, ", ".join(slots), outcome.value, elapsed,
+                             int((self._now() - target).total_seconds() * 1000))
 
             if outcome is BookingOutcome.CREATED:
                 self._note(state="done", outcome="created", message="平台已建单，请及时付款")

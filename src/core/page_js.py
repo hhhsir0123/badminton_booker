@@ -240,6 +240,13 @@ HELPERS = r"""
     if (found.error) { return { ok: false, error: found.error }; }
     var block = found.cell.querySelector('.reserveBlock');
     if (!block) { return { ok: false, error: 'no-block' }; }
+    // 抢票拼毫秒：格子已经不是 free 就直接判不可用，不要点了再等 class 变化
+    var probe = String(block.className || '').split(/\s+/);
+    if (probe.indexOf('free') < 0 || probe.some(function (c) {
+      return c === 'reserved' || c === 'reservation' || c === 'disabled';
+    })) {
+      return { ok: false, error: 'not-free', classes: probe };
+    }
     var before = block.className;
     var selectedBefore = document.querySelectorAll('.reserveBlock.selected, .reserveBlock.active').length;
     var rect = block.getBoundingClientRect();
@@ -461,7 +468,7 @@ requestAnimationFrame(function () {
 # 一次调用完成「选中若干场格」，返回每格的实际结果。
 SELECT_CELLS_JS = """
 const done = arguments[arguments.length - 1];
-const [targets] = arguments;
+const [targets, waitMs] = arguments;
 if (!window.__bb) { done({ ok: false, error: 'no-helpers' }); return; }
 (function () {
   const results = [];
@@ -475,7 +482,7 @@ if (!window.__bb) { done({ ok: false, error: 'no-helpers' }); return; }
           const block = found.cell && found.cell.querySelector('.reserveBlock');
           return block && (block.classList.contains('selected') || block.classList.contains('active'))
             ? block : null;
-        }, 750);
+        }, Number(waitMs) > 0 ? Number(waitMs) : 750);
         result.changed = Boolean(selected);
         if (selected) result.classes = [...selected.classList];
       }

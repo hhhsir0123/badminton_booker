@@ -37,6 +37,7 @@ class BookingManager:
         self.query = query
         self.captcha_solver = captcha_solver
         self.submit_flow = None      # 点选验证码流程，由 pipeline 注入（带图鉴 provider）
+        self.cell_wait_ms = 750      # 点完格子等 class 变化的上限（抢票会调到 200）
         self.background_clicks = True
 
     @property
@@ -65,10 +66,11 @@ class BookingManager:
             return {"status": "unavailable", "detail": "court-not-found"}
 
         targets = [{"court": court, "slot": slot} for slot in slots]
-        payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets) or {}
+        wait_ms = int(getattr(self, "cell_wait_ms", 750))
+        payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets, wait_ms) or {}
         if not payload.get("ok") and payload.get("error") == "no-helpers":
             self.query.install()
-            payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets) or {}
+            payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets, wait_ms) or {}
 
         results = payload.get("results") or []
         if not results:
@@ -130,10 +132,12 @@ class BookingManager:
                 logger.warning("场地 %s 不在当前页且翻页未找到", court)
                 return {"status": "unavailable", "detail": f"court-not-found:{court}"}
             targets = [{"court": court, "slot": slot} for slot in slots]
-            payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets) or {}
+            payload = self.driver.execute_async_script(
+                SELECT_CELLS_JS, targets, int(getattr(self, "cell_wait_ms", 750))) or {}
             if not payload.get("ok") and payload.get("error") == "no-helpers":
                 self.query.install()
-                payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets) or {}
+                payload = self.driver.execute_async_script(
+                    SELECT_CELLS_JS, targets, int(getattr(self, "cell_wait_ms", 750))) or {}
             for item in payload.get("results") or []:
                 if item.get("ok") and (item.get("changed") or "selected" in (item.get("classes") or [])):
                     selected.append(item.get("slot"))
