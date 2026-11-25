@@ -583,6 +583,45 @@ class PeriodicScanningPipeline(BasePipeline):
     def _wait_for_next_scan(self, seconds: int):
         self._stopped.wait(max(0, int(seconds)))
 
+    def _maybe_heartbeat(self, rounds: int, read_ok: bool):
+        """每隔一段时间发一条飞书，告诉用户「程序还活着」。"""
+        period = int(self.config.get("polling.heartbeat_seconds", 3600) or 0)
+        if period <= 0:
+            return
+        notifier = getattr(self, "feishu_notifier", None)
+        if not notifier or not notifier.enabled:
+            return
+        now = time.monotonic()
+        last = getattr(self, "_last_heartbeat", None)
+        if last is None:
+            # 刚开始跑就记一笔，满一个周期后再发，避免启动瞬间打扰
+            self._last_heartbeat = now
+            return
+        if now - last < period:
+            return
+        self._last_heartbeat = now
+        dates = ", ".join(self._dates() or [])
+        span = self.config.get("polling.polling_time_range", "")
+        hours = self.config.get("polling.polling_hours", 1)
+        courts = self.config.get("polling.polling_courts") or ["全部场地"]
+        lines = [
+            "轮询心跳：程序运行正常",
+            f"- 日期：{dates}",
+            f"- 时段：{span} 连续 {hours} 小时",
+            f"- 场地：{'、'.join(str(c) for c in courts)}",
+            f"- 已完成轮次：{rounds}",
+            f"- 最近一轮：{self.summary.get('last_seconds', '?')}s，读取{'正常' if read_ok else '失败'}",
+            f"- 连续失败：{getattr(self, '_failures', 0)} 次",
+        ]
+        next_scan = self.summary.get("next_scan_at")
+        if next_scan:
+            lines.append(f"- 下次扫描：{next_scan}")
+        try:
+            if notifier.send_text("\n".join(lines)):
+                self.logger.info("已发送轮询心跳（第 %s 轮）", rounds)
+        except Exception as error:  # noqa: BLE001
+            self.logger.warning("发送轮询心跳失败: %s", error)
+
     def _next_wait(self, read_ok: bool) -> int:
         """读表正常就按设定间隔；连续失败就指数退避，并在第 3/6 次尝试恢复会话。"""
         base = max(5, int(getattr(self, "scan_interval", 60) or 60))
@@ -777,6 +816,7 @@ class PeriodicScanningPipeline(BasePipeline):
                 self.summary["last_seconds"] = round(time.monotonic() - started, 2)
                 if self._booked_list() or getattr(self, "_halt", False):
                     break
+                self._maybe_heartbeat(count, read_ok)
                 wait = self._next_wait(read_ok)
                 self.summary["next_scan_at"] = (
                     datetime.now(BEIJING) + timedelta(seconds=wait)

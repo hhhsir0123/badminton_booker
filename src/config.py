@@ -62,6 +62,7 @@ DEFAULTS: Dict[str, Any] = {
     "polling": {
         "polling_interval": 60,
         # 关注的时间段：在这个区间里找连续空场（整点）
+        "heartbeat_seconds": 3600,
         "polling_time_range": "19:00-21:00",
         # 连续小时数：只支持 1 或 2
         "polling_hours": 1,
