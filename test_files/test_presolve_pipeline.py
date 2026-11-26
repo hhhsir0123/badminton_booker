@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -131,3 +132,42 @@ class PresolvePipelineTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrewarmAndAttemptsTest(unittest.TestCase):
+    def test_prewarm_falls_back_to_previous_day(self):
+        from datetime import date
+
+        job = pipeline()
+        job.query_manager = Mock()
+        job.query_manager.focus_date.side_effect = [False, True]
+        job._stopped = threading.Event()
+        job._prewarm(date(2026, 11, 29))
+        calls = [c.args[0] for c in job.query_manager.focus_date.call_args_list]
+        self.assertEqual(calls, ["2026-11-29", "2026-11-28"])
+        job.logger.info.assert_called_once()
+        self.assertIn("2026-11-28", job.logger.info.call_args[0])
+
+    def test_prewarm_skips_previous_day_when_target_visible(self):
+        from datetime import date
+
+        job = pipeline()
+        job.query_manager = Mock()
+        job.query_manager.focus_date.return_value = True
+        job._stopped = threading.Event()
+        job._prewarm(date(2026, 11, 29))
+        job.query_manager.focus_date.assert_called_once_with("2026-11-29", fresh=False)
+
+
+class MaxAttemptsTest(unittest.TestCase):
+    def test_default_is_ten(self):
+        self.assertEqual(pipeline()._max_attempts(), 10)
+
+    def test_runtime_override_wins(self):
+        self.assertEqual(pipeline(**{"runtime.grab_max_attempts": 14})._max_attempts(), 14)
+
+    def test_falls_back_to_booking_setting(self):
+        self.assertEqual(pipeline(**{"booking.max_attempts": 3})._max_attempts(), 3)
+
+    def test_invalid_value_falls_back(self):
+        self.assertEqual(pipeline(**{"runtime.grab_max_attempts": "abc"})._max_attempts(), 10)

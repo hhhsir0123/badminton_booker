@@ -46,6 +46,18 @@ class BookingManager:
 
     # ------------------------------------------------------------- 选择
 
+    @staticmethod
+    def _failure_detail(failed: List[Dict[str, Any]], key: str = "slot") -> str:
+        """失败原因 + 格子 class 原文，方便判断 not-free 是真空还是判定写错。"""
+        if not failed:
+            return "unknown"
+        first = failed[0]
+        detail = first.get("error") or ",".join(str(item.get(key, "?")) for item in failed)
+        classes = first.get("classes") or []
+        if classes:
+            detail = f"{detail} [{' '.join(str(c) for c in classes)}]"
+        return detail
+
     def select_slots(self, court: str, slots: List[str]) -> Dict:
         """点击场格。返回 {status: 'selected'|'partial'|'unavailable'|'error', detail}。"""
         # 有些平台要求先过验证码才能占场
@@ -93,9 +105,7 @@ class BookingManager:
                     and self._selected_matches(court, slots, require_details=True)):
                 logger.info("场格 class 没有变化，但提交按钮已可用，按已选中处理")
                 return {"status": "selected", "detail": []}
-            detail = failed[0].get("error") or ",".join(
-                item.get("slot", "?") for item in failed
-            )
+            detail = self._failure_detail(failed, "slot")
             logger.warning("选中失败: %s", detail)
             return {"status": "unavailable", "detail": detail}
         if failed:
@@ -149,7 +159,7 @@ class BookingManager:
                     and self._selected_matches_segments(segments, require_details=True)):
                 logger.info("场格 class 没有变化，但提交按钮已可用，按已选中处理")
                 return {"status": "selected", "detail": []}
-            detail = failed[0].get("error") or ",".join(item.get("slot", "?") for item in failed)
+            detail = self._failure_detail(failed, "slot")
             logger.warning("选中失败: %s", detail)
             return {"status": "unavailable", "detail": detail}
         if failed:

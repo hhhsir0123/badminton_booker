@@ -264,6 +264,20 @@ class TicketGrabbingPipeline(BasePipeline):
                 return False
         return False
 
+    def _max_attempts(self) -> int:
+        """抢票候选尝试数。
+
+        一次判死只要 ~8ms，多试几个几乎不花时间；booking.max_attempts
+        保持原语义给其他模式用，抢票默认 10。
+        """
+        value = self.config.get("runtime.grab_max_attempts")
+        if value is None:
+            value = self.config.get("booking.max_attempts", 10)
+        try:
+            return max(1, int(value))
+        except (TypeError, ValueError):
+            return 10
+
     def _prewarm(self, play_day: date) -> None:
         """提前把目标日期渲染出来：07:00 只需要刷新数据，省掉首次渲染的几百毫秒。"""
         if self.stopped:
@@ -272,7 +286,13 @@ class TicketGrabbingPipeline(BasePipeline):
             if self.query_manager.focus_date(play_day.isoformat(), fresh=False):
                 self.logger.info("预热：%s 已显示在预约表上，放场时只需要刷新数据", play_day)
             else:
-                self.logger.info("预热：%s 还不在可预约窗口内，放场后再取", play_day)
+                # 目标日期还没放场，先把前一天渲染出来：表格/Vue 组件热起来，
+                # 放场时只切日期，省掉首次渲染的开销。
+                warm = (play_day - timedelta(days=1)).isoformat()
+                if self.query_manager.focus_date(warm, fresh=False):
+                    self.logger.info("预热：目标 %s 未放场，先把 %s 的表格渲染出来", play_day, warm)
+                else:
+                    self.logger.info("预热：%s 还不在可预约窗口内，放场后再取", play_day)
         except Exception as error:  # noqa: BLE001
             self.logger.debug("预热失败（不影响主流程）: %s", error)
 
@@ -642,7 +662,7 @@ class TicketGrabbingPipeline(BasePipeline):
         opening, play_day = booking_plan(self.config, now, preview or dry_run)
         choices = preferences(self.config)
         advance = int(self.config.get("booking.advance_time", 120))
-        max_attempts = int(self.config.get("booking.max_attempts", 3))
+        max_attempts = self._max_attempts()
         allow_partial = bool(self.config.get("booking.allow_partial", False))
         partner = str(self.config.get("user.partner_name") or "").strip()
         partners = [partner] if partner else []
