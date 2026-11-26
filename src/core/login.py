@@ -254,7 +254,18 @@ class LoginManager:
             return True
 
         logger.info("进入场馆: %s", venue_name)
-        element = self._find_venue(venue_name)
+        # 登录后首页的场馆列表是异步渲染的，第一次经常还看不到；等一会儿并刷新重试
+        element = None
+        for attempt in range(1, 4):
+            element = self._wait_venue_entry(venue_name, 6)
+            if element:
+                break
+            logger.warning("第 %s 次没找到场馆入口（%s），刷新首页重试", attempt, venue_name)
+            try:
+                self.driver.get(self._venue_home_url())
+                time.sleep(1.0)
+            except Exception as error:  # noqa: BLE001
+                logger.debug("刷新首页失败: %s", error)
         if not element:
             logger.error("未找到场馆入口: %s", venue_name)
             self._screenshot("venue_not_found.png")
@@ -275,6 +286,27 @@ class LoginManager:
         self._close_modal()
         logger.info("已进入 %s 场馆页面", venue_name)
         return True
+
+    def _venue_home_url(self) -> str:
+        try:
+            from urllib.parse import urlparse
+
+            parts = urlparse(self.driver.current_url)
+            return f"{parts.scheme}://{parts.netloc}/venue/home"
+        except Exception:  # noqa: BLE001
+            return "https://ggtypt.cumtb.edu.cn/venue/home"
+
+    def _wait_venue_entry(self, venue_name: str, timeout: float = 6.0):
+        deadline = time.monotonic() + max(0.5, timeout)
+        while time.monotonic() < deadline:
+            try:
+                element = self._find_venue(venue_name)
+            except Exception:  # noqa: BLE001
+                element = None
+            if element:
+                return element
+            time.sleep(0.1)
+        return None
 
     def _find_venue(self, venue_name: str):
         xpaths = [
