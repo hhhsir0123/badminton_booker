@@ -185,6 +185,40 @@ class ApiClient:
     STATUS_RESERVED = 4
 
     @classmethod
+    def day_slots(cls, data: Dict[str, Any], day: str) -> Dict[str, Dict[str, Dict[str, Any]]]:
+        """解析 day/info：场地 → 时段 → {space_id, time_id, price, status}。
+
+        space_id 是行级元数据 id（不是场格字典的 key），time_id 来自 spaceTimeInfo。
+        """
+        rows = (data.get("reservationDateSpaceInfo") or {}).get(day) or []
+        times: Dict[str, Any] = {}
+        for item in (data.get("spaceTimeInfo") or []):
+            if not isinstance(item, dict):
+                continue
+            key = f"{item.get('beginTime')}-{item.get('endTime')}"
+            times[key] = item.get("id")
+        out: Dict[str, Dict[str, Dict[str, Any]]] = {}
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            space_id = row.get("id")
+            for key, cell in row.items():
+                if not isinstance(cell, dict) or not cell.get("spaceName"):
+                    continue
+                start = str(cell.get("startDate") or "")
+                end = str(cell.get("endDate") or "")
+                if len(start) < 16 or len(end) < 16:
+                    continue
+                slot = f"{start[11:16]}-{end[11:16]}"
+                out.setdefault(str(cell["spaceName"]), {})[slot] = {
+                    "space_id": space_id,
+                    "time_id": times.get(slot),
+                    "price": cell.get("orderFee") or 0,
+                    "status": cell.get("reservationStatus"),
+                }
+        return out
+
+    @classmethod
     def parse_slots(cls, data: Dict[str, Any], day: str) -> Dict[str, Dict[str, str]]:
         rows = (data.get("reservationDateSpaceInfo") or {}).get(day) or []
         slots: Dict[str, Dict[str, str]] = {}

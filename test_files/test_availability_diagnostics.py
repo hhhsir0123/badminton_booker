@@ -139,7 +139,9 @@ class AvailabilityClassificationTest(unittest.TestCase):
         p.summary = {}
         p.logger = Mock()
         p._stopped = threading.Event()
-        p.config = SimpleNamespace(get=lambda key, default=None: default)
+        p.config = SimpleNamespace(
+            get=lambda key, default=None: False if key == "booking.use_api_submit" else default
+        )
         p._clear_captcha = lambda: True
         q = Mock()
         q.focus_date.return_value = focus

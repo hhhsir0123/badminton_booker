@@ -649,12 +649,14 @@ class QueryManager:
         info = ApiClient.inspect_day_response(status, body, wanted)
         # 顺手把场格解析出来：放场检测和「出候选」用同一次请求，省一次 90KB 往返
         slots = None
+        cells = None
         if info.get("ok") and info.get("target_date_present"):
             try:
                 import json as _json
 
                 payload = _json.loads(body or "{}")
                 slots = ApiClient.parse_slots(payload.get("data") or {}, wanted)
+                cells = ApiClient.day_slots(payload.get("data") or {}, wanted)
             except Exception:  # noqa: BLE001
                 slots = None
         return {
@@ -662,6 +664,7 @@ class QueryManager:
             "length": len(body or ""),
             "ms": (time.monotonic() - started) * 1000,
             "slots": slots,
+            "cells": cells,
             **info,
         }
 

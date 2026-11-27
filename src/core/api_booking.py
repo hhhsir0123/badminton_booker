@@ -117,3 +117,51 @@ def check_captcha(client, rep: Dict[str, Any], points: List[Tuple[int, int]]) ->
 
 def submit_order(client, payload: Dict[str, Any]) -> Tuple[int, str]:
     return client.post_form("/api/reservation/order/submit", payload)
+
+
+def solve_captcha(client, provider) -> Optional[Dict[str, Any]]:
+    """取图 → 识别 → check，返回 {verification, token, points, at}。"""
+    import time as _time
+
+    rep = fetch_captcha(client)
+    if not rep:
+        return None
+    image = decode_captcha_image(rep)
+    words = rep.get("wordList") or []
+    points = provider.solve(image, words=words)
+    if not points:
+        return None
+    result = check_captcha(client, rep, points)
+    if not result:
+        return None
+    return {
+        "verification": result["verification"],
+        "variants": result["variants"],
+        "token": rep["token"],
+        "points": points,
+        "at": _time.monotonic(),
+    }
+
+
+def build_order_payload(client, day: str, entries: List[Dict[str, Any]], *, buddy_ids: str,
+                        phone: str, click: Tuple[int, int] = (512, 384)) -> Dict[str, Any]:
+    """entries: [{"space_id":..,"time_id":..,"price":..}, ...]（同一笔订单的多段）。"""
+    from ..core.order_pin import build_order_pin
+
+    order_json = json.dumps(
+        [{"spaceId": str(e["space_id"]), "timeId": str(e["time_id"])} for e in entries],
+        separators=(",", ":"),
+    )
+    price = sum(float(e.get("price") or 0) for e in entries)
+    return {
+        "reservationOrderJson": order_json,
+        "reservationDate": day,
+        "weekStartDate": day,
+        "reservationType": -1,
+        "orderPrice": int(price) if float(price).is_integer() else price,
+        "orderPin": build_order_pin(int(click[0]), int(click[1])),
+        "venueSiteId": getattr(client, "venue_site_id", None),
+        "phone": phone,
+        "buddyUids": "",
+        "buddyIds": buddy_ids,
+    }
