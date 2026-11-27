@@ -315,7 +315,10 @@ HELPERS = r"""
     var terms = bb.reservationTerms(button);
     if (terms && !terms.checked) {
       if (!confirmTerms || terms.disabled) { return { ok: false, reason: 'terms-unchecked' }; }
-      terms.click();
+      // iview 的 checkbox 是隐藏 input，直接点它不会触发 Vue 的 change；
+      // 点外层 label/span 才行（羽毛球和乒乓球页面都是这套结构）
+      var clickTarget = terms.closest('label') || terms.parentElement || terms;
+      clickTarget.click();
       button = await bb.waitFor(function () {
         var current = bb.submitButton();
         if (!bb.submitEnabled(current)) { return null; }

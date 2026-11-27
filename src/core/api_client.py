@@ -51,6 +51,12 @@ class ApiClient:
         self.origin = origin.rstrip("/")
         self.token = token or ""
         self.timeout = timeout
+        # 验证码的校验状态可能绑在会话 cookie 上，带上浏览器的 cookie 更稳
+        self.cookie_header = ""
+        self.user_agent = (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36"
+        )
 
     def _headers(self, path: str, data: Dict[str, Any]) -> Dict[str, str]:
         stamp = int(time.time() * 1000)
@@ -59,10 +65,15 @@ class ApiClient:
             "timestamp": str(stamp),
             "sign": signature(stamp, path, data),
             "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "zh-CN,zh;q=0.9",
+            "User-Agent": self.user_agent,
             "Referer": self.origin + "/venue/",
         }
         if self.token:
             headers["cgAuthorization"] = self.token
+            headers["cgappauthorization"] = self.token
+        if self.cookie_header:
+            headers["Cookie"] = self.cookie_header
         return headers
 
     def get(self, path: str, params: Dict[str, Any]) -> Tuple[int, str]:
@@ -192,3 +203,26 @@ class ApiClient:
                 start_time, end_time = start.split(" ")[1][:5], end.split(" ")[1][:5]
                 slots.setdefault(court, {})[f"{start_time}-{end_time}"] = f"{start_time}-{end_time}"
         return slots
+
+
+def _form(data: Dict[str, Any]) -> str:
+    """按前端口径序列化表单：空串保留、None 丢弃。"""
+    pairs = []
+    for key, value in data.items():
+        if value is None:
+            continue
+        pairs.append((key, str(value)))
+    return urllib.parse.urlencode(pairs)
+
+
+def _post_form(self, path: str, data: Dict[str, Any]) -> Tuple[int, str]:
+    body = _form(data).encode("utf-8")
+    headers = self._headers(path, data)
+    headers["Content-Type"] = "application/x-www-form-urlencoded"
+    request = urllib.request.Request(
+        f"{self.origin}{API_PREFIX}{path}", data=body, headers=headers, method="POST"
+    )
+    return self._open(request)
+
+
+ApiClient.post_form = _post_form
