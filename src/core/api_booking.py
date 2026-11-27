@@ -48,7 +48,6 @@ def fetch_captcha(client, client_uid: str = "") -> Optional[Dict[str, Any]]:
         "captchaType": CAPTCHA_TYPE,
         "clientUid": client_uid or f"point-{uuid.uuid4()}",
         "ts": int(__import__("time").time() * 1000),
-        "nocache": int(__import__("time").time() * 1000),
     }
     data = client.json_get("/api/captcha/get", params) or {}
     # 两种返回形状都要兼容：{code:200,data:{repCode,repData}} 或直接的 {repCode,repData}

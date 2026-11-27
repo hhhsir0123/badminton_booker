@@ -68,6 +68,8 @@ class ApiClient:
             "Accept-Language": "zh-CN,zh;q=0.9",
             "User-Agent": self.user_agent,
             "Referer": self.origin + "/venue/",
+            "Origin": self.origin,
+            "X-Requested-With": "XMLHttpRequest",
         }
         if self.token:
             headers["cgAuthorization"] = self.token

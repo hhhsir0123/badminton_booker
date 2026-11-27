@@ -40,6 +40,11 @@ def main() -> int:
         query.install()
         client = query._api_client()
         try:
+            client.user_agent = driver.execute_script("return navigator.userAgent") or client.user_agent
+            logger.info("使用浏览器 UA：%s", client.user_agent[:60])
+        except Exception:
+            pass
+        try:
             cookies = driver.get_cookies() or []
             client.cookie_header = "; ".join(f"{c['name']}={c['value']}" for c in cookies)
             logger.info("带上 %s 个浏览器 cookie", len(cookies))
@@ -109,7 +114,26 @@ def main() -> int:
             logger.warning("本地识别失败: %s", error)
         if not points:
             provider = TTShituProvider.from_config(config)
-            points = provider.solve(image, words=words)
+            samples = []
+            for _ in range(1):
+                try:
+                    got = provider.solve(image, words=words)
+                except Exception:  # noqa: BLE001
+                    continue
+                if got and len(got) == len(words):
+                    samples.append(got)
+                time.sleep(0.15)
+            if samples:
+                # 多打几次取中位数，压低单次偏移
+                import statistics
+                points = [
+                    (int(statistics.median(s[i][0] for s in samples)),
+                     int(statistics.median(s[i][1] for s in samples)))
+                    for i in range(len(samples[0]))
+                ]
+                logger.info("多采样中位数坐标：%s（%s 次）", points, len(samples))
+            else:
+                points = provider.solve(image, words=words)
         logger.info("识别坐标：%s", points)
 
         result = check_captcha(client, rep, points)
@@ -136,6 +160,22 @@ def main() -> int:
         }
         status, body = submit_order(client, payload)
         logger.info("下单返回 HTTP %s：%s", status, (body or "")[:200])
+        tries = 0
+        while '"code":250' in (body or "") and "非法校验" in (body or "") and tries < 3:
+            tries += 1
+            logger.info("验证码校验未过，换一张重试（第 %s 次）", tries)
+            rep = fetch_captcha(client)
+            if not rep:
+                break
+            img = decode_captcha_image(rep)
+            pts = provider.solve(img, words=rep.get("wordList") or [])
+            res = check_captcha(client, rep, pts)
+            if not res:
+                continue
+            payload["captchaVerification"] = res["variants"][2]
+            payload["captchaToken"] = rep["token"]
+            status, body = submit_order(client, payload)
+            logger.info("重试下单返回 HTTP %s：%s", status, (body or "")[:200])
         index = 0
         while '"code":511' in (body or "") and index + 1 < len(result["variants"]):
             index += 1
