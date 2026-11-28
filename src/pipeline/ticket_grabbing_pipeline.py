@@ -739,6 +739,8 @@ class TicketGrabbingPipeline(BasePipeline):
         baseline = None
         backoff = 0.0
         queries = 0
+        transport_failures = 0
+        transport_retries = int(self.config.get("runtime.probe_transport_retries", 3) or 0)
         while not self.stopped and self._now() < deadline:
             now = self._now()
             probe = self.query_manager.probe(play_day)
@@ -758,6 +760,20 @@ class TicketGrabbingPipeline(BasePipeline):
                         "目标日期接口数据已就绪：%s 字符（基线 %s，%sms）",
                         probe.get("length"), baseline, int(probe.get("ms") or 0),
                     )
+
+            # 传输层失败（超时/连接被重置）不能一次就判死：今天 07:00 就吃过这个亏
+            if probe.get("status") in (0, None):
+                transport_failures += 1
+                if transport_failures <= transport_retries:
+                    deadline = max(deadline, now + timedelta(seconds=2))
+                    self.logger.warning("接口探测传输失败（第 %s/%s 次，%sms），2 秒内重试",
+                                        transport_failures, transport_retries,
+                                        int(probe.get("ms") or 0))
+                    if not self._sleep(0.2):
+                        return []
+                    continue
+                self.logger.error("接口探测连续传输失败 %s 次，放弃本轮", transport_failures)
+                return []
 
             if now >= opening or released(probe, baseline):
                 if reload_thread is not None:

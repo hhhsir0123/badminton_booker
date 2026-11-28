@@ -216,3 +216,46 @@ class AvailabilityClassificationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TransportRetryTest(unittest.TestCase):
+    """探测传输失败要重试，不能一次就判死（07:00 真实踩过）。"""
+
+    def pipeline(self):
+        p = TicketGrabbingPipeline.__new__(TicketGrabbingPipeline)
+        p.summary = {}
+        p.logger = Mock()
+        p._stopped = threading.Event()
+        p.config = SimpleNamespace(
+            get=lambda key, default=None: False if key == "booking.use_api_submit" else default
+        )
+        p._clear_captcha = lambda: True
+        q = Mock()
+        q.focus_date.return_value = True
+        q.last_query_status = {"ok": True}
+        q.last_page_error = None
+        q.iter_pages.side_effect = lambda: iter([{"训练馆3号": {"19:00-20:00": "19:00-20:00"}}])
+        q.free_slots.side_effect = lambda page: page
+        p.query_manager = q
+        p._now = lambda: datetime(2026, 11, 20, 7)
+        p._wait_until = lambda _: True
+        p._sleep = lambda _: True
+        return p
+
+    def test_transport_error_then_success(self):
+        p = self.pipeline()
+        p.query_manager.probe.side_effect = [
+            {"status": 0, "ok": False, "error": "transport-error", "ms": 8000},
+            {"status": 200, "ok": True, "target_date_present": True, "ms": 1},
+        ]
+        found = p._grab(DAY, p._now(), [(None, ("19:00", "20:00"), ())])
+        self.assertTrue(found)
+        self.assertEqual(p.summary["probe_queries"], 2)
+
+    def test_gives_up_after_retries(self):
+        p = self.pipeline()
+        p.query_manager.probe.return_value = {"status": 0, "ok": False, "error": "transport-error", "ms": 8000}
+        found = p._grab(DAY, p._now(), [(None, ("19:00", "20:00"), ())])
+        self.assertEqual(found, [])
+        # 默认重试 3 次 + 首次，共 4 次
+        self.assertEqual(p.summary["probe_queries"], 4)
