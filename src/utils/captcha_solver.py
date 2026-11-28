@@ -33,6 +33,7 @@ IMAGE_SELECTORS = [
     "div.ivu-form-item-content img",
     "img[src*='captcha']",
     "img[src^='data:image']",
+    "img[src^='blob:']",
 ]
 
 CLICK_HINT = "//*[contains(text(), '请依次点击')]"
@@ -127,7 +128,18 @@ class CaptchaSolver:
     MIN_WIDTH = 40
     MIN_HEIGHT = 14
 
-    def _image_element(self):
+    def _image_element(self, timeout: float = 1.5):
+        """找验证码图；找不到就等一会儿再找（登录页刚切 tab 时图还没渲染）。"""
+        deadline = time.monotonic() + max(0.0, timeout)
+        while True:
+            found = self._find_image_once()
+            if found is not None:
+                return found
+            if time.monotonic() >= deadline:
+                return None
+            time.sleep(0.05)
+
+    def _find_image_once(self):
         # 优先：验证码输入框所在表单项里的图片
         field = self._input_element()
         if field is not None:
@@ -146,7 +158,35 @@ class CaptchaSolver:
             for element in self.driver.find_elements("css selector", selector):
                 if self._looks_like_captcha(element):
                     return element
-        return None
+
+        # 兜底：新版登录页的验证码图是 blob:，且不在 ivu-form-item 里；
+        # 取「尺寸像验证码」且离输入框最近的那张，避开 logo。
+        field = self._input_element()
+        best = None
+        best_distance = None
+        for element in self.driver.find_elements("css selector", "img"):
+            if not self._looks_like_captcha(element):
+                continue
+            size = element.size or {}
+            if int(size.get("width") or 0) > 200 or int(size.get("height") or 0) > 80:
+                continue
+            if field is None:
+                return element
+            try:
+                distance = self.driver.execute_script(
+                    """
+                    const a = arguments[0].getBoundingClientRect();
+                    const b = arguments[1].getBoundingClientRect();
+                    return Math.abs((a.top + a.height / 2) - (b.top + b.height / 2))
+                         + Math.abs((a.left + a.width / 2) - (b.left + b.width / 2));
+                    """,
+                    field, element,
+                )
+            except Exception:  # noqa: BLE001
+                distance = 0
+            if best is None or (distance is not None and (best_distance is None or distance < best_distance)):
+                best, best_distance = element, distance
+        return best
 
     def _looks_like_captcha(self, element) -> bool:
         try:
@@ -170,8 +210,31 @@ class CaptchaSolver:
 
     # ------------------------------------------------------------- 取图
 
+    def _wait_image_ready(self, element, timeout: float = 1.5) -> bool:
+        """等 <img> 真正加载完（blob/data 图片加载完成前 naturalWidth 是 0）。"""
+        deadline = time.monotonic() + max(0.1, timeout)
+        while time.monotonic() < deadline:
+            try:
+                ready = self.driver.execute_script(
+                    """
+                    const el = arguments[0];
+                    if (!el) { return false; }
+                    if (el.tagName !== 'IMG') { return true; }
+                    const src = el.currentSrc || el.src || '';
+                    return !!(src && el.naturalWidth > 0);
+                    """,
+                    element,
+                )
+            except Exception:  # noqa: BLE001
+                ready = False
+            if ready:
+                return True
+            time.sleep(0.05)
+        return False
+
     def capture(self, element) -> Optional[bytes]:
         """优先用页面内 canvas（快），失败再退回截图（慢但兼容跨域图片）。"""
+        self._wait_image_ready(element)
         try:
             data_url = self.driver.execute_script(JS_CAPTURE, element)
         except Exception:  # noqa: BLE001
@@ -363,6 +426,12 @@ class CaptchaSolver:
                 return False
             code = self.recognize(png)
             elapsed = int((time.monotonic() - started) * 1000)
+            if not code:
+                # 图片可能刚刷新还没稳定，稍等一下再取一次，别急着换图
+                time.sleep(0.25)
+                png = self.capture(image)
+                code = self.recognize(png) if png else ""
+                elapsed = int((time.monotonic() - started) * 1000)
             if not code:
                 logger.warning("第 %s 次识别失败（%sms），刷新验证码", attempt, elapsed)
                 self.refresh()

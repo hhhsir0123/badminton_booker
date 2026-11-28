@@ -373,3 +373,27 @@ class WholeHourTest(unittest.TestCase):
         data["booking"]["preferences"] = [{"court": "任意", "start": "19:00", "end": "21:00"}]
         self.assertFalse(any("整点" in item for item in validate_config(data)))
 
+
+
+class FailureDetailTest(unittest.TestCase):
+    def test_includes_cell_classes(self):
+        from src.core.court_booking import BookingManager
+
+        detail = BookingManager._failure_detail(
+            [{"error": "not-free", "classes": ["reserveBlock", "reserved"]}]
+        )
+        self.assertIn("not-free", detail)
+        self.assertIn("reserved", detail)
+
+    def test_falls_back_to_slot_names(self):
+        from src.core.court_booking import BookingManager
+
+        detail = BookingManager._failure_detail(
+            [{"slot": "14:00-15:00"}, {"slot": "15:00-16:00"}], "slot"
+        )
+        self.assertEqual(detail, "14:00-15:00,15:00-16:00")
+
+    def test_handles_empty_list(self):
+        from src.core.court_booking import BookingManager
+
+        self.assertEqual(BookingManager._failure_detail([]), "unknown")

@@ -36,6 +36,8 @@ class BookingManager:
         self.browser = browser
         self.query = query
         self.captcha_solver = captcha_solver
+        self.submit_flow = None      # 点选验证码流程，由 pipeline 注入（带图鉴 provider）
+        self.cell_wait_ms = 750      # 点完格子等 class 变化的上限（抢票会调到 200）
         self.background_clicks = True
 
     @property
@@ -43,6 +45,18 @@ class BookingManager:
         return self.browser.driver
 
     # ------------------------------------------------------------- 选择
+
+    @staticmethod
+    def _failure_detail(failed: List[Dict[str, Any]], key: str = "slot") -> str:
+        """失败原因 + 格子 class 原文，方便判断 not-free 是真空还是判定写错。"""
+        if not failed:
+            return "unknown"
+        first = failed[0]
+        detail = first.get("error") or ",".join(str(item.get(key, "?")) for item in failed)
+        classes = first.get("classes") or []
+        if classes:
+            detail = f"{detail} [{' '.join(str(c) for c in classes)}]"
+        return detail
 
     def select_slots(self, court: str, slots: List[str]) -> Dict:
         """点击场格。返回 {status: 'selected'|'partial'|'unavailable'|'error', detail}。"""
@@ -64,10 +78,11 @@ class BookingManager:
             return {"status": "unavailable", "detail": "court-not-found"}
 
         targets = [{"court": court, "slot": slot} for slot in slots]
-        payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets) or {}
+        wait_ms = int(getattr(self, "cell_wait_ms", 750))
+        payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets, wait_ms) or {}
         if not payload.get("ok") and payload.get("error") == "no-helpers":
             self.query.install()
-            payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets) or {}
+            payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets, wait_ms) or {}
 
         results = payload.get("results") or []
         if not results:
@@ -90,9 +105,7 @@ class BookingManager:
                     and self._selected_matches(court, slots, require_details=True)):
                 logger.info("场格 class 没有变化，但提交按钮已可用，按已选中处理")
                 return {"status": "selected", "detail": []}
-            detail = failed[0].get("error") or ",".join(
-                item.get("slot", "?") for item in failed
-            )
+            detail = self._failure_detail(failed, "slot")
             logger.warning("选中失败: %s", detail)
             return {"status": "unavailable", "detail": detail}
         if failed:
@@ -129,10 +142,12 @@ class BookingManager:
                 logger.warning("场地 %s 不在当前页且翻页未找到", court)
                 return {"status": "unavailable", "detail": f"court-not-found:{court}"}
             targets = [{"court": court, "slot": slot} for slot in slots]
-            payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets) or {}
+            payload = self.driver.execute_async_script(
+                SELECT_CELLS_JS, targets, int(getattr(self, "cell_wait_ms", 750))) or {}
             if not payload.get("ok") and payload.get("error") == "no-helpers":
                 self.query.install()
-                payload = self.driver.execute_async_script(SELECT_CELLS_JS, targets) or {}
+                payload = self.driver.execute_async_script(
+                    SELECT_CELLS_JS, targets, int(getattr(self, "cell_wait_ms", 750))) or {}
             for item in payload.get("results") or []:
                 if item.get("ok") and (item.get("changed") or "selected" in (item.get("classes") or [])):
                     selected.append(item.get("slot"))
@@ -144,7 +159,7 @@ class BookingManager:
                     and self._selected_matches_segments(segments, require_details=True)):
                 logger.info("场格 class 没有变化，但提交按钮已可用，按已选中处理")
                 return {"status": "selected", "detail": []}
-            detail = failed[0].get("error") or ",".join(item.get("slot", "?") for item in failed)
+            detail = self._failure_detail(failed, "slot")
             logger.warning("选中失败: %s", detail)
             return {"status": "unavailable", "detail": detail}
         if failed:
@@ -177,6 +192,67 @@ class BookingManager:
             logger.warning("已选里缺场地: %s", missing)
             return False
         return all(slot in text for court, slots in segments for slot in slots)
+
+    def _selected_amount(self) -> str:
+        """底部「已选」里的订单金额，用来确认选场真的进了 Vue。"""
+        try:
+            text = str(self.driver.execute_script(SELECTED_TEXT_JS) or "")
+        except Exception:  # noqa: BLE001
+            return "读取失败"
+        import re
+
+        match = re.search(r"金额[：:]\s*(¥?\s*[\d.]+\s*元?)", text)
+        return match.group(1).strip() if match else "未显示金额"
+
+    def _panel_brief(self) -> str:
+        """一行内的提交面板状态：boxes / 按钮 class / 须知 disabled,checked。"""
+        script = """
+        const boxes = [...document.querySelectorAll('.submit_order_box')]
+          .filter(b => b.getClientRects().length);
+        const b = window.__bb.submitButton();
+        const t = b ? window.__bb.reservationTerms(b) : null;
+        return {boxes: boxes.length, btn: b ? String(b.className) : null,
+                termsDisabled: t ? !!t.disabled : null,
+                termsChecked: t ? !!t.checked : null};
+        """
+        try:
+            return str(self.driver.execute_script(script) or {})
+        except Exception as error:  # noqa: BLE001
+            return f"读取失败:{error}"
+
+    def _describe_submit_state(self) -> str:
+        """把订单面板的真实状态打进日志，便于事后定位「须知不可点」这类问题。"""
+        script = """
+        const boxes = [...document.querySelectorAll('.submit_order_box')];
+        return boxes.map(function (b) {
+          const btn = [...b.querySelectorAll('.btn,button')].find(x => /^(提交|确认|预约)/.test((x.innerText||'').trim()));
+          const terms = [...b.querySelectorAll('input[type=checkbox]')].map(i => ({
+              checked: !!i.checked, disabled: !!i.disabled,
+              label: i.closest('label') ? i.closest('label').innerText.trim().slice(0, 12) : null }));
+          return {visible: !!b.getClientRects().length, cls: String(b.className),
+                  btn: btn ? String(btn.className) : null,
+                  text: (b.innerText || '').replace(/\s+/g, ' ').slice(0, 40), terms: terms};
+        });
+        """
+        try:
+            boxes = self.driver.execute_script(script) or []
+        except Exception as error:  # noqa: BLE001
+            return f"读取失败: {error}"
+        return str(boxes)[:400]
+
+    def _wait_submit_ready(self, timeout_ms: int = 6000) -> bool:
+        """等订单面板就绪（签到框可点、按钮可用），最多 timeout_ms 毫秒。"""
+        from .page_js import WAIT_SUBMIT_READY_JS
+
+        try:
+            result = self.driver.execute_async_script(WAIT_SUBMIT_READY_JS, int(timeout_ms)) or {}
+        except Exception as error:  # noqa: BLE001
+            logger.debug("等待提交面板就绪失败（忽略）: %s", error)
+            return False
+        if result.get("ok"):
+            return True
+        logger.warning("提交面板 %.1fs 内没就绪（%s），仍尝试提交", timeout_ms / 1000, result.get("reason"))
+        return False
 
     def clear_selection(self) -> bool:
         """只清理已选场格，并确认仍在同一张预约表。"""
@@ -315,7 +391,10 @@ class BookingManager:
         partner_names = partner_names or []
         logger.info("尝试预订 %s %s", court_name, ", ".join(time_slots))
 
+        select_started = time.monotonic()
         selection = self.select_slots(court_name, time_slots)
+        logger.info("[指标] 选场耗时=%sms status=%s",
+                    int((time.monotonic() - select_started) * 1000), selection.get("status"))
         if selection["status"] == "error":
             logger.warning("选场阶段出错（%s），不提交订单", selection.get("detail"))
             return BookingOutcome.UNKNOWN
@@ -329,6 +408,9 @@ class BookingManager:
             logger.info("只选中部分时段且未开启 allow_partial，换下一个候选")
             return BookingOutcome.UNAVAILABLE
 
+        logger.info("[指标] 已选金额=%s", self._selected_amount())
+        logger.info("[指标] 提交面板=%s", self._panel_brief())
+
         if not self.background_clicks:
             # 保留一个显式等待的钩子，方便需要人工确认弹窗的场景
             time.sleep(0.2)
@@ -336,9 +418,14 @@ class BookingManager:
         if is_click_parter or partner_names:
             self.click_partner(partner_names)
 
+        # 放场瞬间整页刷新后，订单面板可能还在初始化（须知 disabled），先等它就绪
+        # 只等 1.2s：放场抢票拼的是毫秒，等太久不如换下一个候选
+        self._wait_submit_ready(timeout_ms=1200)
+
         # 放场瞬间刚整页刷新过，预约须知/提交按钮可能还是 disabled 状态，
         # prepareSubmit 会直接返回 terms-unchecked。什么都没提交，重试是安全的。
         payload = {}
+        submit_started = time.monotonic()
         for attempt in range(1, 4):
             payload = (self.submit(submit_timeout_ms, confirm_terms=True)
                        if confirm_terms else self.submit(submit_timeout_ms))
@@ -346,17 +433,25 @@ class BookingManager:
             if reason not in ("terms-unchecked", "terms-confirmation-failed", "submit-disabled"):
                 break
             if attempt < 3:
-                logger.warning("提交按钮/预约须知未就绪（%s），%sms 后重试",
-                               reason, 300 * attempt)
-                time.sleep(0.3 * attempt)
-        if payload.get("reason") == "captcha" and confirm_terms:
-            logger.warning("平台要求验证码，暂停自动下单，请在预约页面完成验证")
-            return BookingOutcome.UNKNOWN
+                delay = 0.25 * attempt
+                logger.warning("提交按钮/预约须知未就绪（%s），%.2fs 后重试（%s/3）",
+                               reason, delay, attempt)
+                time.sleep(delay)
+        logger.info("[指标] 提交回执 reason=%s message=%s 耗时=%sms",
+                    payload.get("reason"), str(payload.get("message") or "")[:60],
+                    int((time.monotonic() - submit_started) * 1000))
         if payload.get("reason") == "captcha":
+            # 不管是预解失效还是本来就没预解，都现场解一次——
+            # 「confirm_terms=True」只是允许勾须知，不应该意味着遇到验证码就放弃。
+            logger.info("平台要求点选验证码，转现场识别")
             payload = self._solve_captcha_and_wait(submit_timeout_ms)
-        if payload.get("reason") in ("terms-unchecked", "terms-confirmation-failed"):
-            logger.warning("已选中场地，但预约须知或提交按钮状态未就绪，订单未提交")
-            return BookingOutcome.UNKNOWN
+        if payload.get("reason") in ("terms-unchecked", "terms-confirmation-failed", "submit-disabled"):
+            logger.warning("提交面板诊断: %s", self._describe_submit_state())
+            # 这类失败一定没提交出去，是页面还没就绪，不是「结果未知」：
+            # 返回 UNAVAILABLE，让上层换下一个候选继续抢（每次尝试都多一次机会）。
+            logger.warning("预约须知/提交按钮始终未就绪（%s），订单未提交，换下一个候选",
+                           payload.get("reason"))
+            return BookingOutcome.UNAVAILABLE
         outcome = self._verdict(payload)
         if outcome is BookingOutcome.UNKNOWN:
             self._snapshot_unknown()
@@ -369,10 +464,19 @@ class BookingManager:
             from ..utils.click_word_solver import ClickWordSolver
             from .submit_captcha import SubmitCaptchaFlow
 
-            flow = SubmitCaptchaFlow(self.driver, ClickWordSolver())
+            flow = self.submit_flow or SubmitCaptchaFlow(self.driver, ClickWordSolver())
+            mark = flow.order_mark()
             if flow.solve_now(max_rounds=2) is None:
                 return {"ok": False, "reason": "captcha", "message": "验证码处理失败"}
-            logger.info("验证码已通过，继续等待提交回执")
+            logger.info("验证码已点击，等平台校验并提交")
+            # 优先看平台自己的下单接口回执：比页面提示可靠，也能分清成功/被拒
+            response = flow.wait_order_response(mark, timeout=timeout_ms / 1000 + 2)
+            if isinstance(response, dict):
+                code = str(response.get("code"))
+                if code == "200" and response.get("data") not in (None, "", {}, []):
+                    return {"ok": True, "reason": "api", "message": "下单成功"}
+                if code and code != "200":
+                    return {"ok": False, "reason": "toast", "message": str(response.get("msg") or "")}
             return self.driver.execute_async_script(AWAIT_OUTCOME_JS, int(timeout_ms), "") or {
                 "ok": False, "reason": "no-result"
             }

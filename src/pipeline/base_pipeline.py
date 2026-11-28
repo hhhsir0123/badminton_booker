@@ -193,6 +193,11 @@ class BasePipeline(ABC):
         confirm_terms: bool = False,
     ) -> BookingOutcome:
         """共用普通页面下单入口，由上层决定日期和候选。"""
+        if getattr(self.booking_manager, "submit_flow", None) is None:
+            try:
+                self.booking_manager.submit_flow = self._build_submit_flow()
+            except Exception as error:  # noqa: BLE001
+                self.logger.warning("验证码组件不可用（%s），现场识别将退化", type(error).__name__)
         return self.booking_manager.book_court(
             court_name=court,
             time_slots=slots,

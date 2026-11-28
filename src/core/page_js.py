@@ -240,6 +240,13 @@ HELPERS = r"""
     if (found.error) { return { ok: false, error: found.error }; }
     var block = found.cell.querySelector('.reserveBlock');
     if (!block) { return { ok: false, error: 'no-block' }; }
+    // 抢票拼毫秒：格子已经不是 free 就直接判不可用，不要点了再等 class 变化
+    var probe = String(block.className || '').split(/\s+/);
+    if (probe.indexOf('free') < 0 || probe.some(function (c) {
+      return c === 'reserved' || c === 'reservation' || c === 'disabled';
+    })) {
+      return { ok: false, error: 'not-free', classes: probe };
+    }
     var before = block.className;
     var selectedBefore = document.querySelectorAll('.reserveBlock.selected, .reserveBlock.active').length;
     var rect = block.getBoundingClientRect();
@@ -308,7 +315,10 @@ HELPERS = r"""
     var terms = bb.reservationTerms(button);
     if (terms && !terms.checked) {
       if (!confirmTerms || terms.disabled) { return { ok: false, reason: 'terms-unchecked' }; }
-      terms.click();
+      // iview 的 checkbox 是隐藏 input，直接点它不会触发 Vue 的 change；
+      // 点外层 label/span 才行（羽毛球和乒乓球页面都是这套结构）
+      var clickTarget = terms.closest('label') || terms.parentElement || terms;
+      clickTarget.click();
       button = await bb.waitFor(function () {
         var current = bb.submitButton();
         if (!bb.submitEnabled(current)) { return null; }
@@ -461,7 +471,7 @@ requestAnimationFrame(function () {
 # 一次调用完成「选中若干场格」，返回每格的实际结果。
 SELECT_CELLS_JS = """
 const done = arguments[arguments.length - 1];
-const [targets] = arguments;
+const [targets, waitMs] = arguments;
 if (!window.__bb) { done({ ok: false, error: 'no-helpers' }); return; }
 (function () {
   const results = [];
@@ -475,7 +485,7 @@ if (!window.__bb) { done({ ok: false, error: 'no-helpers' }); return; }
           const block = found.cell && found.cell.querySelector('.reserveBlock');
           return block && (block.classList.contains('selected') || block.classList.contains('active'))
             ? block : null;
-        }, 750);
+        }, Number(waitMs) > 0 ? Number(waitMs) : 750);
         result.changed = Boolean(selected);
         if (selected) result.classes = [...selected.classList];
       }
@@ -496,6 +506,25 @@ window.__bb.submit(timeout, confirmTerms === true).then(done).catch(function (er
 });
 """
 
+
+# 等「预约须知 + 提交按钮」真正可用：放场瞬间整页刷新后，订单面板会有一段
+# 初始化时间，此时复选框是 disabled，prepareSubmit 会直接返回 terms-unchecked。
+WAIT_SUBMIT_READY_JS = """
+const done = arguments[arguments.length - 1];
+const [timeoutMs] = arguments;
+if (!window.__bb) { done({ ok: false, reason: 'no-helpers' }); return; }
+window.__bb.waitFor(function () {
+  var button = window.__bb.submitButton();
+  if (!button) { return null; }
+  var terms = window.__bb.reservationTerms(button);
+  if (terms && terms.disabled) { return null; }
+  return button;
+}, Math.max(500, Number(timeoutMs) || 6000)).then(function (button) {
+  done({ ok: Boolean(button), reason: null });
+}).catch(function (error) {
+  done({ ok: false, reason: String(error) });
+});
+"""
 
 # 选场后点提交：先走 prepareSubmit（勾选预约须知、等按钮可用），
 # 再用 DOM 事件点按钮——Selenium 原生 click 会被浮层挡住。

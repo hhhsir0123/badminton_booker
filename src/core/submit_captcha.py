@@ -369,6 +369,12 @@ class SubmitCaptchaFlow:
         from .page_js import CLICK_SUBMIT_JS
 
         try:
+            from .page_js import WAIT_SUBMIT_READY_JS
+
+            self.driver.execute_async_script(WAIT_SUBMIT_READY_JS, 1200)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
             result = self.driver.execute_async_script(CLICK_SUBMIT_JS, confirm_terms) or {}
         except Exception as error:  # noqa: BLE001
             logger.warning("点击提交按钮失败: %s", error)
@@ -552,8 +558,16 @@ class SubmitCaptchaFlow:
 
     # ------------------------------------------------------------- 现场兜底
 
-    def solve_now(self, max_rounds: int = 3) -> Optional[List[Tuple[int, int]]]:
+    def solve_now(self, max_rounds: int = 3, timeout: float = 5.0) -> Optional[List[Tuple[int, int]]]:
         """现场解一张：返回坐标并完成点击（不依赖预解）。"""
+        # 刚点提交时验证码面板还在加载，先等图片出来再解；否则会直接判失败
+        deadline = time.monotonic() + max(0.5, timeout)
+        while not (self.read() or {}).get("image"):
+            if time.monotonic() >= deadline:
+                logger.warning("现场解：等验证码图片超时")
+                return None
+            time.sleep(0.05)
+        time.sleep(1.2)
         for round_index in range(1, max_rounds + 1):
             data = self.read()
             if not data or not data.get("image"):

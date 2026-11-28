@@ -623,3 +623,63 @@ class NotificationDedupTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class HeartbeatTest(unittest.TestCase):
+    """每小时一条飞书心跳，证明轮询还活着。"""
+
+    def make(self, period=3600):
+        from src.pipeline.periodic_scanning_pipeline import PeriodicScanningPipeline
+
+        pipeline = object.__new__(PeriodicScanningPipeline)
+        pipeline.config = Mock()
+        pipeline.config.get.side_effect = lambda key, default=None: {
+            "polling.heartbeat_seconds": period,
+            "polling.polling_time_range": "14:00-21:00",
+            "polling.polling_hours": 2,
+            "polling.polling_courts": ["全部场地"],
+        }.get(key, default)
+        pipeline.summary = {"last_seconds": 4.2}
+        pipeline._failures = 0
+        pipeline._dates = lambda: ["2026-11-28"]
+        pipeline.logger = Mock()
+        pipeline.feishu_notifier = Mock()
+        pipeline.feishu_notifier.enabled = True
+        pipeline.feishu_notifier.send_text.return_value = True
+        return pipeline
+
+    def test_first_call_only_starts_timer(self):
+        pipeline = self.make()
+        with patch("src.pipeline.periodic_scanning_pipeline.time.monotonic", return_value=1000.0):
+            pipeline._maybe_heartbeat(1, True)
+        pipeline.feishu_notifier.send_text.assert_not_called()
+
+    def test_sends_after_period_and_not_before(self):
+        pipeline = self.make(period=3600)
+        with patch("src.pipeline.periodic_scanning_pipeline.time.monotonic", return_value=1000.0):
+            pipeline._maybe_heartbeat(1, True)
+        with patch("src.pipeline.periodic_scanning_pipeline.time.monotonic", return_value=2000.0):
+            pipeline._maybe_heartbeat(2, True)
+        pipeline.feishu_notifier.send_text.assert_not_called()
+        with patch("src.pipeline.periodic_scanning_pipeline.time.monotonic", return_value=4700.0):
+            pipeline._maybe_heartbeat(70, True)
+        pipeline.feishu_notifier.send_text.assert_called_once()
+        message = pipeline.feishu_notifier.send_text.call_args[0][0]
+        self.assertIn("轮询心跳", message)
+        self.assertIn("2026-11-28", message)
+        self.assertIn("70", message)
+
+    def test_disabled_when_zero(self):
+        pipeline = self.make(period=0)
+        pipeline._last_heartbeat = 0.0
+        with patch("src.pipeline.periodic_scanning_pipeline.time.monotonic", return_value=99999.0):
+            pipeline._maybe_heartbeat(1, True)
+        pipeline.feishu_notifier.send_text.assert_not_called()
+
+    def test_skips_when_notifier_disabled(self):
+        pipeline = self.make()
+        pipeline.feishu_notifier.enabled = False
+        pipeline._last_heartbeat = 0.0
+        with patch("src.pipeline.periodic_scanning_pipeline.time.monotonic", return_value=99999.0):
+            pipeline._maybe_heartbeat(1, True)
+        pipeline.feishu_notifier.send_text.assert_not_called()

@@ -5,9 +5,11 @@ import unittest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from src.core.booking_result import BookingOutcome
 from src.core.submit_captcha import PreSolvedCaptcha
 from src.pipeline.ticket_grabbing_pipeline import TicketGrabbingPipeline
 from src.utils.click_word_solver import ClickWordSolver
@@ -131,3 +133,92 @@ class PresolvePipelineTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PrewarmAndAttemptsTest(unittest.TestCase):
+    def test_prewarm_falls_back_to_previous_day(self):
+        from datetime import date
+
+        job = pipeline()
+        job.query_manager = Mock()
+        job.query_manager.focus_date.side_effect = [False, True]
+        job._stopped = threading.Event()
+        job._prewarm(date(2026, 11, 29))
+        calls = [c.args[0] for c in job.query_manager.focus_date.call_args_list]
+        self.assertEqual(calls, ["2026-11-29", "2026-11-28"])
+        job.logger.info.assert_called_once()
+        self.assertIn("2026-11-28", job.logger.info.call_args[0])
+
+    def test_prewarm_skips_previous_day_when_target_visible(self):
+        from datetime import date
+
+        job = pipeline()
+        job.query_manager = Mock()
+        job.query_manager.focus_date.return_value = True
+        job._stopped = threading.Event()
+        job._prewarm(date(2026, 11, 29))
+        job.query_manager.focus_date.assert_called_once_with("2026-11-29", fresh=False)
+
+
+class MaxAttemptsTest(unittest.TestCase):
+    def test_default_is_ten(self):
+        self.assertEqual(pipeline()._max_attempts(), 10)
+
+    def test_runtime_override_wins(self):
+        self.assertEqual(pipeline(**{"runtime.grab_max_attempts": 14})._max_attempts(), 14)
+
+    def test_falls_back_to_booking_setting(self):
+        self.assertEqual(pipeline(**{"booking.max_attempts": 3})._max_attempts(), 3)
+
+    def test_invalid_value_falls_back(self):
+        self.assertEqual(pipeline(**{"runtime.grab_max_attempts": "abc"})._max_attempts(), 10)
+
+
+class ApiBookingTest(unittest.TestCase):
+    def job(self, **config):
+        job = pipeline(**config)
+        job.query_manager = Mock()
+        job.query_manager._api_site = 3
+        job._provider = Mock()
+        job._buddy_ids = {"焦文娟": 998138}
+        return job
+
+    def test_api_mode_default_on(self):
+        self.assertTrue(self.job()._api_mode())
+
+    def test_api_mode_can_be_disabled(self):
+        self.assertFalse(self.job(**{"booking.use_api_submit": False})._api_mode())
+
+    def test_book_via_api_creates_order(self):
+        job = self.job()
+        client = Mock()
+        client.json_get.return_value = {"code": 200, "data": {"id": 130908}}
+        job._api_client_or_none = lambda: client
+        job._take_api_captcha = lambda c, p: {"verification": "V", "token": "T", "points": [], "at": 0}
+        job._now = lambda: datetime.now(timezone.utc)
+        cells = {"气膜馆1号": {"09:00-10:00": {"space_id": 3, "time_id": 1, "price": 40}}}
+        with patch("src.core.api_booking.submit_order",
+                   return_value=(200, '{"code":200,"data":{"id":130908}}')):
+            outcome = job._book_via_api(datetime(2026, 11, 30).date(), "气膜馆1号", ["09:00-10:00"], cells)
+        self.assertEqual(outcome, BookingOutcome.CREATED)
+
+    def test_book_via_api_returns_none_without_cells(self):
+        job = self.job()
+        job._api_client_or_none = lambda: Mock()
+        self.assertIsNone(job._book_via_api(datetime(2026, 11, 30).date(), "X", ["09:00-10:00"], {}))
+
+    def test_take_captcha_reuses_presolved_within_ttl(self):
+        job = self.job(**{"captcha.api_presolve_ttl": 100})
+        job._api_captcha = {"verification": "V", "token": "T", "at": 0.0}
+        with patch("src.pipeline.ticket_grabbing_pipeline.time.monotonic", return_value=50.0):
+            got = job._take_api_captcha(Mock(), Mock())
+        self.assertEqual(got["verification"], "V")
+
+    def test_take_captcha_solves_when_expired(self):
+        job = self.job(**{"captcha.api_presolve_ttl": 100})
+        job._api_captcha = {"verification": "OLD", "token": "T", "at": 0.0}
+        with patch("src.pipeline.ticket_grabbing_pipeline.time.monotonic", return_value=500.0), \
+                patch("src.core.api_booking.solve_captcha", return_value={"verification": "NEW", "at": 500.0}) as solve:
+            got = job._take_api_captcha(Mock(), Mock())
+        solve.assert_called_once()
+        self.assertEqual(got["verification"], "NEW")

@@ -14,6 +14,8 @@
 """
 from __future__ import annotations
 
+import json
+import threading
 import time
 from datetime import date, datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -170,6 +172,12 @@ class TicketGrabbingPipeline(BasePipeline):
     def start(self) -> bool:
         if not super().start():
             return False
+        # 抢票模式：格子不是 free 立即判死；点完只等 200ms 看 class
+        if getattr(self, "booking_manager", None) is not None:
+            self.booking_manager.cell_wait_ms = int(self.config.get("runtime.cell_wait_ms", 200) or 200)
+        # 实验开关：是否尝试「不整页刷新，只改日期栏状态」（默认关）
+        if getattr(self, "query_manager", None) is not None:
+            self.query_manager.patch_date_bar = bool(self.config.get("runtime.patch_date_bar", False))
         if not self.config.get("captcha.pre_solve", True):
             self._note(captcha_pre_solve={"state": "disabled", "message": "预解已关闭"})
             return True
@@ -257,6 +265,163 @@ class TicketGrabbingPipeline(BasePipeline):
                 return False
         return False
 
+    def _api_mode(self) -> bool:
+        """抢票是否走「纯接口下单」（默认开）。"""
+        return bool(self.config.get("booking.use_api_submit", True))
+
+    def _api_client_or_none(self):
+        query = getattr(self, "query_manager", None)
+        if query is None:
+            return None
+        try:
+            client = query._api_client()
+        except Exception:  # noqa: BLE001
+            return None
+        if client is None:
+            return None
+        try:
+            client.venue_site_id = query._api_site
+        except Exception:  # noqa: BLE001
+            pass
+        return client
+
+    def _captcha_provider(self):
+        if getattr(self, "_provider", None) is not None:
+            return self._provider
+        try:
+            from ..utils.ttshitu_provider import TTShituProvider
+
+            self._provider = TTShituProvider.from_config(self.config)
+        except Exception as error:  # noqa: BLE001
+            self.logger.debug("打码平台不可用: %s", error)
+            self._provider = None
+        return self._provider
+
+    def _buddy_id(self, partners) -> str:
+        if not partners:
+            return ""
+        mapping = getattr(self, "_buddy_ids", None) or {}
+        return str(mapping.get(partners[0]) or "")
+
+    def _load_buddies(self, day: str) -> None:
+        """缓存同伴名 → id，下单 payload 需要。"""
+        client = self._api_client_or_none()
+        if client is None:
+            return
+        try:
+            data = client.json_get("/api/reservation/day/info", {
+                "venueSiteId": str(getattr(client, "venue_site_id", "")),
+                "searchDate": day, "hasReserveInfo": "1",
+                "nocache": str(int(time.time() * 1000))}) or {}
+            items = ((data.get("orderParamView") or {}).get("buddyList") or [])
+            self._buddy_ids = {str(b.get("name")): b.get("id") for b in items if b.get("name")}
+            self.logger.info("同伴缓存：%s 个", len(self._buddy_ids))
+        except Exception as error:  # noqa: BLE001
+            self.logger.debug("读取同伴列表失败: %s", error)
+
+    def _api_presolve(self) -> bool:
+        """用接口预解验证码：T-60s 拿到 captchaVerification，放场直接用。"""
+        client = self._api_client_or_none()
+        provider = self._captcha_provider()
+        if client is None or provider is None:
+            return False
+        try:
+            from ..core.api_booking import solve_captcha
+
+            resolved = solve_captcha(client, provider)
+        except Exception as error:  # noqa: BLE001
+            self.logger.warning("接口预解失败: %s", error)
+            return False
+        if not resolved:
+            self.logger.warning("接口预解未成功（识别或校验失败）")
+            return False
+        self._api_captcha = resolved
+        ttl = int(self.config.get("captcha.api_presolve_ttl", 100) or 100)
+        self.logger.info("接口预解完成，有效期按 %ss 计", ttl)
+        return True
+
+    def _take_api_captcha(self, client, provider):
+        """优先用预解结果；过期或没有就现场解。"""
+        resolved = getattr(self, "_api_captcha", None)
+        ttl = int(self.config.get("captcha.api_presolve_ttl", 100) or 100)
+        if resolved and time.monotonic() - resolved["at"] <= ttl:
+            self._api_captcha = None
+            self.logger.info("使用预解的验证码（已放置 %ss）", int(time.monotonic() - resolved["at"]))
+            return resolved
+        self._api_captcha = None
+        try:
+            from ..core.api_booking import solve_captcha
+
+            return solve_captcha(client, provider)
+        except Exception as error:  # noqa: BLE001
+            self.logger.warning("现场解验证码失败: %s", error)
+            return None
+
+    def _book_via_api(self, play_day: date, court: str, slots, cells):
+        """纯接口下单：不刷新页面、不选 DOM。返回 BookingOutcome 或 None（表示回落页面）。"""
+        client = self._api_client_or_none()
+        provider = self._captcha_provider()
+        if client is None or provider is None or not cells:
+            return None
+        court_cells = cells.get(court) or {}
+        entries = []
+        for slot in slots:
+            cell = court_cells.get(slot)
+            if not isinstance(cell, dict) or cell.get("time_id") is None or cell.get("space_id") is None:
+                self.logger.warning("接口下单缺少 %s %s 的 spaceId/timeId", court, slot)
+                return None
+            entries.append(cell)
+        try:
+            from ..core.api_booking import build_order_payload, submit_order
+        except Exception:  # noqa: BLE001
+            return None
+        buddy = self._buddy_id([str(self.config.get("user.partner_name") or "").strip()])
+        for attempt in range(1, 4):
+            captcha = self._take_api_captcha(client, provider)
+            if not captcha:
+                return None
+            payload = build_order_payload(
+                client, play_day.isoformat(), entries, buddy_ids=buddy,
+                phone=str(self.config.get("user.username") or ""),
+            )
+            payload["captchaVerification"] = captcha["verification"]
+            payload["captchaToken"] = captcha["token"]
+            started = time.monotonic()
+            status, body = submit_order(client, payload)
+            elapsed = int((time.monotonic() - started) * 1000)
+            self.logger.info("[指标] 接口下单返回（%sms，第 %s 次）：%s", elapsed, attempt, (body or "")[:160])
+            try:
+                data = json.loads(body or "{}")
+            except Exception:  # noqa: BLE001
+                data = {}
+            code = str(data.get("code"))
+            message = str(data.get("message") or "")
+            if code == "200" and isinstance(data.get("data"), dict):
+                order = data["data"]
+                self.logger.info("预订成功（接口）：%s %s，订单 %s", court, ", ".join(slots), order.get("id"))
+                return BookingOutcome.CREATED
+            if "验证码" in message:
+                continue
+            if "未支付" in message:
+                self.logger.warning("接口下单被未支付订单挡住")
+                return BookingOutcome.REJECTED
+            return None
+        return None
+
+    def _max_attempts(self) -> int:
+        """抢票候选尝试数。
+
+        一次判死只要 ~8ms，多试几个几乎不花时间；booking.max_attempts
+        保持原语义给其他模式用，抢票默认 10。
+        """
+        value = self.config.get("runtime.grab_max_attempts")
+        if value is None:
+            value = self.config.get("booking.max_attempts", 10)
+        try:
+            return max(1, int(value))
+        except (TypeError, ValueError):
+            return 10
+
     def _prewarm(self, play_day: date) -> None:
         """提前把目标日期渲染出来：07:00 只需要刷新数据，省掉首次渲染的几百毫秒。"""
         if self.stopped:
@@ -265,7 +430,13 @@ class TicketGrabbingPipeline(BasePipeline):
             if self.query_manager.focus_date(play_day.isoformat(), fresh=False):
                 self.logger.info("预热：%s 已显示在预约表上，放场时只需要刷新数据", play_day)
             else:
-                self.logger.info("预热：%s 还不在可预约窗口内，放场后再取", play_day)
+                # 目标日期还没放场，先把前一天渲染出来：表格/Vue 组件热起来，
+                # 放场时只切日期，省掉首次渲染的开销。
+                warm = (play_day - timedelta(days=1)).isoformat()
+                if self.query_manager.focus_date(warm, fresh=False):
+                    self.logger.info("预热：目标 %s 未放场，先把 %s 的表格渲染出来", play_day, warm)
+                else:
+                    self.logger.info("预热：%s 还不在可预约窗口内，放场后再取", play_day)
         except Exception as error:  # noqa: BLE001
             self.logger.debug("预热失败（不影响主流程）: %s", error)
 
@@ -304,6 +475,68 @@ class TicketGrabbingPipeline(BasePipeline):
             return True
         self._presolve_fallback("没有有效预解结果，或结果已过期、页面已刷新")
         return False
+
+    def _log_date_bar_state(self, tag: str):
+        """记录日期栏状态（只读诊断）：几个页签、页面的 advanceReservationDays 是多少。
+
+        用来判断「不放刷新能不能让新日期出现在日期栏」：
+        如果放场前后 advanceReservationDays 变了、日期栏却还是旧的，就说明是页面缓存，
+        值得做「改状态 + 重渲染」；否则只能刷新。
+        """
+        script = """
+        try {
+          const seen = new Set(); let vm = null;
+          function find(node, d) {
+            if (!node || d > 12 || seen.has(node)) return null;
+            seen.add(node);
+            if (node.$data && node.$data.tableVenueSite) return node;
+            for (const c of (node.$children || [])) { const r = find(c, d + 1); if (r) return r; }
+            return null;
+          }
+          for (const el of document.querySelectorAll('*')) {
+            const v = el.__vue__; if (!v) continue;
+            vm = find(v, 0); if (vm) break;
+          }
+          const tabs = [...document.querySelectorAll('.date_box > div')]
+            .filter(e => e.getClientRects().length)
+            .map(e => (e.innerText || '').replace(/\s+/g, ' ').trim());
+          return JSON.stringify({
+            tabs: tabs,
+            advance: vm ? vm.advanceReservationDays : null,
+            dateList: vm ? vm.reservationDateList : null
+          });
+        } catch (e) { return JSON.stringify({error: String(e)}); }
+        """
+        try:
+            driver = getattr(getattr(self, "browser", None), "driver", None)
+            if driver is None:
+                return
+            self.logger.info("[指标] 日期栏(%s)=%s", tag, driver.execute_script(script))
+        except Exception as error:  # noqa: BLE001
+            self.logger.debug("日期栏诊断失败: %s", error)
+
+    def _presolve_useful(self, day: str) -> bool:
+        """放场要整页刷新时，预解 token 必被作废，不如省掉、提交时现场解。
+
+        判据：T-60s 时目标日期在不在日期栏。D+2 在放场前永远不在，
+        所以这一步实际会跳过预解；D+1 之类的场景仍然照旧预解。
+        """
+        try:
+            if self.query_manager is None:
+                return True
+            if getattr(self.query_manager, "patch_date_bar", False):
+                # 已启用「不整页刷新」：预解 token 不会被刷新销毁，值得预解
+                self.logger.info("已启用日期栏 patch（不整页刷新），保留预解")
+                return True
+            if self.query_manager.index_of(day) is None:
+                self.logger.info(
+                    "目标日期 %s 还不在日期栏（放场会整页刷新），跳过预解、改用提交时现场解", day
+                )
+                return False
+        except Exception as error:  # noqa: BLE001
+            self.logger.debug("判断预解是否有用失败（按有用处理）: %s", error)
+            return True
+        return True
 
     def _pre_solve_captcha(self, min_validity: float = 0) -> bool:
         started = time.monotonic()
@@ -393,22 +626,38 @@ class TicketGrabbingPipeline(BasePipeline):
                 result["error"] = "captcha-blocked"
                 return []
             refresh = str(self.config.get("runtime.grid_refresh", "auto"))
-            if not self.query_manager.focus_date(play_day, fresh=True, refresh=refresh):
+            if self._api_mode():
+                self.logger.info("[指标] 接口模式：跳过日期刷新与 DOM 读表")
+            elif not self.query_manager.focus_date(play_day, fresh=True, refresh=refresh):
                 detail = getattr(self.query_manager, "last_query_status", {})
                 result["error"] = detail.get("error") if isinstance(detail, dict) else "date-not-ready"
                 result["error"] = result["error"] or "date-not-ready"
                 return []
             cutoff = now.strftime("%H:%M") if play_day == now.date().isoformat() else None
             fallback = bool(self.config.get("booking.fallback_any", False))
-            merged: Dict[str, Dict[str, str]] = {}
-            for page in self.query_manager.iter_pages():
-                result["pages"] += 1
-                for court, slots in self.query_manager.free_slots(page).items():
-                    merged.setdefault(court, {}).update(slots)
-            page_error = getattr(self.query_manager, "last_page_error", None)
-            if result["pages"] == 0 or isinstance(page_error, str):
-                result["error"] = page_error if isinstance(page_error, str) else "table-missing"
-                return []
+            # 优先复用放场探测那次 day/info 的响应（同一份数据，不再多发一次请求）
+            probe = getattr(self, "_released_probe", None) or {}
+            probe_slots = probe.get("slots") if isinstance(probe, dict) else None
+            api_merged = probe_slots if isinstance(probe_slots, dict) else self.query_manager.api_free_slots(play_day)
+            if isinstance(api_merged, dict):
+                merged: Dict[str, Dict[str, str]] = api_merged
+                result["source"] = "api"
+                result["pages"] = 0
+                self.logger.info("[指标] 候选来源=%s，场格=%s，耗时=%sms",
+                                 "探测响应" if isinstance(probe_slots, dict) else "接口",
+                                 sum(len(slots) for slots in merged.values()),
+                                 int((time.monotonic() - started) * 1000))
+            else:
+                result["source"] = "dom"
+                merged = {}
+                for page in self.query_manager.iter_pages():
+                    result["pages"] += 1
+                    for court, slots in self.query_manager.free_slots(page).items():
+                        merged.setdefault(court, {}).update(slots)
+                page_error = getattr(self.query_manager, "last_page_error", None)
+                if result["pages"] == 0 or isinstance(page_error, str):
+                    result["error"] = page_error if isinstance(page_error, str) else "table-missing"
+                    return []
             self.summary["availability_reads"] = int(self.summary.get("availability_reads", 0)) + 1
             result["free_slots"] = sum(len(slots) for slots in merged.values())
             found = candidates(merged, choices, cutoff, fallback)
@@ -462,9 +711,36 @@ class TicketGrabbingPipeline(BasePipeline):
         if not self._wait_until(wake_at):
             return []
 
+        # 并行刷新：放场那一刻页面就要开始 reload，和接口探测同时进行，
+        # 这样 focus_date 打开时日期栏已经有新日期，省掉一次串行等待（~380ms）。
+        reload_thread = None
+        if self.config.get("runtime.overlap_release_reload", True):
+            try:
+                self.query_manager._api_client()   # 预热会话，避免并行时抢 driver
+            except Exception:  # noqa: BLE001
+                pass
+            reload_at = opening + timedelta(milliseconds=30)
+
+            def _reload_worker():
+                try:
+                    delay = (reload_at - self._now()).total_seconds()
+                    if delay > 0:
+                        time.sleep(delay)
+                    started = time.monotonic()
+                    self.query_manager.reload()
+                    self.logger.info("[指标] 并行刷新完成：%sms",
+                                     int((time.monotonic() - started) * 1000))
+                except Exception as error:  # noqa: BLE001
+                    self.logger.warning("并行刷新失败（不影响主流程）: %s", error)
+
+            reload_thread = threading.Thread(target=_reload_worker, daemon=True)
+            reload_thread.start()
+
         baseline = None
         backoff = 0.0
         queries = 0
+        transport_failures = 0
+        transport_retries = int(self.config.get("runtime.probe_transport_retries", 3) or 0)
         while not self.stopped and self._now() < deadline:
             now = self._now()
             probe = self.query_manager.probe(play_day)
@@ -485,8 +761,26 @@ class TicketGrabbingPipeline(BasePipeline):
                         probe.get("length"), baseline, int(probe.get("ms") or 0),
                     )
 
+            # 传输层失败（超时/连接被重置）不能一次就判死：今天 07:00 就吃过这个亏
+            if probe.get("status") in (0, None):
+                transport_failures += 1
+                if transport_failures <= transport_retries:
+                    deadline = max(deadline, now + timedelta(seconds=2))
+                    self.logger.warning("接口探测传输失败（第 %s/%s 次，%sms），2 秒内重试",
+                                        transport_failures, transport_retries,
+                                        int(probe.get("ms") or 0))
+                    if not self._sleep(0.2):
+                        return []
+                    continue
+                self.logger.error("接口探测连续传输失败 %s 次，放弃本轮", transport_failures)
+                return []
+
             if now >= opening or released(probe, baseline):
+                if reload_thread is not None:
+                    reload_thread.join(timeout=3)
+                self._released_probe = probe
                 self._note(state="reading")
+                self._log_date_bar_state("放场后")
                 found = self._candidates_for(play_day, now, choices)
                 if found:
                     return found
@@ -530,7 +824,7 @@ class TicketGrabbingPipeline(BasePipeline):
         opening, play_day = booking_plan(self.config, now, preview or dry_run)
         choices = preferences(self.config)
         advance = int(self.config.get("booking.advance_time", 120))
-        max_attempts = int(self.config.get("booking.max_attempts", 3))
+        max_attempts = self._max_attempts()
         allow_partial = bool(self.config.get("booking.allow_partial", False))
         partner = str(self.config.get("user.partner_name") or "").strip()
         partners = [partner] if partner else []
@@ -580,8 +874,16 @@ class TicketGrabbingPipeline(BasePipeline):
             if not self._wait_until(target - timedelta(seconds=60)):
                 self._note(state="cancelled", message="任务在预解前被取消")
                 return False
-            validity = max(0, (target - self._now()).total_seconds()) + 5
-            self._pre_solve_captcha(min_validity=validity)
+            self._log_date_bar_state("T-60s")
+            if self._api_mode() and self.config.get("captcha.api_presolve", True):
+                self._load_buddies(play_day.isoformat())
+                self._api_presolve()
+            elif self._presolve_useful(play_day.isoformat()):
+                validity = max(0, (target - self._now()).total_seconds()) + 5
+                self._pre_solve_captcha(min_validity=validity)
+            else:
+                self._note(captcha_pre_solve={"state": "skipped",
+                                              "message": "目标日期还不在日期栏，预解会被刷新作废"})
         if not self._wait_until(target - timedelta(milliseconds=1500)):
             self._note(state="cancelled", message="任务在放场前被取消")
             return False
@@ -599,12 +901,33 @@ class TicketGrabbingPipeline(BasePipeline):
             return False
 
         self._note(candidates=[{"court": c, "slots": s} for c, s in found])
+        self.logger.info("[指标] 放场→候选就绪=%dms（候选 %d 个）",
+                         int((self._now() - target).total_seconds() * 1000), len(found))
         for index, (court, slots) in enumerate(found[:max_attempts], start=1):
             if self.stopped:
                 self._note(state="cancelled", message="提交前被取消")
                 return False
             self.logger.info("候选 %s/%s：%s %s", index, min(len(found), max_attempts), court, ", ".join(slots))
+            self.logger.info("[指标] 放场→开始提交=%dms",
+                             int((self._now() - target).total_seconds() * 1000))
             started = time.monotonic()
+            if self._api_mode():
+                cells = (getattr(self, "_released_probe", None) or {}).get("cells")
+                api_outcome = self._book_via_api(play_day, court, slots, cells)
+                if api_outcome is BookingOutcome.CREATED:
+                    elapsed = int((time.monotonic() - started) * 1000)
+                    self.summary.setdefault("timings", {})[f"attempt_{index}_ms"] = elapsed
+                    self.summary["api_submit_used"] = True
+                    self._note(state="done", outcome="created",
+                               message="接口已建单，请 15 分钟内付款")
+                    self.logger.info("[指标] 放场→接口建单=%dms", int((self._now() - target).total_seconds() * 1000))
+                    self._notify(play_day, court, slots)
+                    return True
+                # 接口没成：确保页面在目标日期，走页面兜底
+                try:
+                    self.query_manager.focus_date(play_day.isoformat(), fresh=False)
+                except Exception:  # noqa: BLE001
+                    pass
             if index == 1 and self._validate_pre_solved():
                 presolved_result = self._submit_presolved(court, slots)
                 if presolved_result == "ok":
@@ -623,10 +946,16 @@ class TicketGrabbingPipeline(BasePipeline):
                     self._notify_failure(f"{court} {'、'.join(slots)} 提交结果未知，请核对订单")
                     return False
                 self._presolve_fallback("预解路径未提交")
-            outcome = self._book_candidate(court, slots, partners, allow_partial=allow_partial)
+            # confirm_terms=True：抢票必须自己勾「预约须知」，否则 prepareSubmit
+            # 会直接返回 terms-unchecked（页面上的须知本来就是未勾选状态）。
+            outcome = self._book_candidate(court, slots, partners,
+                                           allow_partial=allow_partial, confirm_terms=True)
             elapsed = int((time.monotonic() - started) * 1000)
             self.last_outcome = outcome
             self.summary.setdefault("timings", {})[f"attempt_{index}_ms"] = elapsed
+            self.logger.info("[指标] 候选 %s：%s %s → %s（%sms，放场后 %dms）",
+                             index, court, ", ".join(slots), outcome.value, elapsed,
+                             int((self._now() - target).total_seconds() * 1000))
 
             if outcome is BookingOutcome.CREATED:
                 self._note(state="done", outcome="created", message="平台已建单，请及时付款")
