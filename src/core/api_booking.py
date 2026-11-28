@@ -111,7 +111,7 @@ def check_captcha(client, rep: Dict[str, Any], points: List[Tuple[int, int]]) ->
             build_captcha_verification(rep["secretKey"], rep["token"], resp_points_json or points_json),
             build_captcha_verification(rep["secretKey"], rep_data.get("token") or rep["token"], point_json),
         ],
-        "verification": build_captcha_verification(rep["secretKey"], rep["token"], point_json),
+        "verification": build_captcha_verification(rep["secretKey"], rep["token"], points_json),
     }
 
 
